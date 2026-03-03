@@ -1,0 +1,191 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Internet Computer Protocol",
+  "projectDescription": "Blockchain infrastructure providing the replica software and operating system for Internet Computer nodes",
+  "theme": "aspen",
+  "primaryColor": "#3B00B9",
+  "lightColor": "#7C4DFF",
+  "darkColor": "#1E0062",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "what-is-icp",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/consensus",
+              "concepts/canisters",
+              "concepts/network-nervous-system"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Building & Deployment",
+        "groups": [
+          {
+            "group": "Build System",
+            "pages": [
+              "build/prerequisites",
+              "build/building-replica",
+              "build/bazel-overview",
+              "build/verification"
+            ]
+          },
+          {
+            "group": "IC-OS Images",
+            "pages": [
+              "ic-os/overview",
+              "ic-os/setupos",
+              "ic-os/hostos",
+              "ic-os/guestos",
+              "ic-os/building-images"
+            ]
+          },
+          {
+            "group": "Node Operations",
+            "pages": [
+              "operations/node-setup",
+              "operations/node-provider-guide",
+              "operations/monitoring",
+              "operations/upgrades"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Core Components",
+            "pages": [
+              "architecture/replica",
+              "architecture/execution-environment",
+              "architecture/state-manager",
+              "architecture/message-routing"
+            ]
+          },
+          {
+            "group": "Consensus & Cryptography",
+            "pages": [
+              "architecture/consensus-layer",
+              "architecture/crypto-layer",
+              "architecture/threshold-signatures",
+              "architecture/dkg"
+            ]
+          },
+          {
+            "group": "Networking",
+            "pages": [
+              "architecture/p2p-layer",
+              "architecture/boundary-nodes",
+              "architecture/xnet-messaging"
+            ]
+          },
+          {
+            "group": "Chain Integrations",
+            "pages": [
+              "architecture/bitcoin-integration",
+              "architecture/ethereum-integration",
+              "architecture/https-outcalls"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/getting-started",
+              "contributing/code-structure",
+              "contributing/rust-dependencies",
+              "contributing/testing"
+            ]
+          },
+          {
+            "group": "Canisters & Smart Contracts",
+            "pages": [
+              "canisters/overview",
+              "canisters/canister-lifecycle",
+              "canisters/system-api",
+              "canisters/inter-canister-calls"
+            ]
+          },
+          {
+            "group": "Published Packages",
+            "pages": [
+              "packages/overview",
+              "packages/pocket-ic",
+              "packages/cryptography",
+              "packages/ledger-types"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Rust Crates",
+            "pages": [
+              "reference/crates-overview",
+              "reference/types",
+              "reference/interfaces",
+              "reference/registry"
+            ]
+          },
+          {
+            "group": "Governance",
+            "pages": [
+              "reference/nns",
+              "reference/sns",
+              "reference/proposals"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "reference/security-model",
+              "reference/vulnerability-reporting",
+              "reference/cryptographic-protocols"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Blockchain consensus protocol with threshold cryptography",
+    "WebAssembly-based canister smart contract execution",
+    "Chain-key cryptography and noninteractive DKG",
+    "Bitcoin and Ethereum blockchain integration",
+    "Network Nervous System (NNS) decentralized governance",
+    "Multiple operating system images for node deployment",
+    "P2P networking and cross-subnet messaging",
+    "Boundary nodes for HTTP gateway functionality"
+  ],
+  "publicApiSurface": [
+    "ic-agent - Rust agent for IC interaction",
+    "pocket-ic - Local testing environment",
+    "ic-cdk - Canister Development Kit",
+    "ic-types - Core protocol types",
+    "ic-crypto - Cryptographic primitives",
+    "ic-certification - Certificate verification",
+    "icrc-ledger-types - Token standard types",
+    "Replica binary - Main node software",
+    "Orchestrator - Node orchestration service",
+    "Boundary node - HTTP gateway software"
+  ]
+}
