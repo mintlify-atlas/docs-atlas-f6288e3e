@@ -1,0 +1,455 @@
+---
+title: ICRC Ledger Types
+description: Type definitions for interacting with ICRC-1 fungible token ledgers on the Internet Computer
+---
+
+The `icrc-ledger-types` package provides comprehensive type definitions for interacting with DFINITY's implementation of the [ICRC-1](https://github.com/dfinity/ICRC-1/) fungible token standard. This package is essential for any application that needs to interact with ICRC-1 compliant ledgers on the Internet Computer.
+
+## Overview
+
+ICRC-1 is the Internet Computer's fungible token standard, similar to Ethereum's ERC-20. The `icrc-ledger-types` package provides all the necessary types, encodings, and utilities to work with ICRC-1 ledgers from both canister code and off-chain applications.
+
+<Info>
+ICRC-1 ledgers are used for ICP tokens, SNS tokens, and any custom fungible tokens deployed on the Internet Computer.
+</Info>
+
+## Installation
+
+```bash
+cargo add icrc-ledger-types
+```
+
+```toml
+[dependencies]
+icrc-ledger-types = "0.1"
+```
+
+## Core Types
+
+### Account
+
+Represents an account on an ICRC-1 ledger:
+
+```rust
+use icrc_ledger_types::icrc1::account::Account;
+use candid::Principal;
+
+// Create an account with just an owner
+let account = Account {
+    owner: Principal::from_text("aaaaa-aa").unwrap(),
+    subaccount: None,
+};
+
+// Create an account with a subaccount
+let subaccount = [0u8; 32];
+let account_with_sub = Account {
+    owner: Principal::from_text("aaaaa-aa").unwrap(),
+    subaccount: Some(subaccount),
+};
+```
+
+### Tokens
+
+Represents token amounts using arbitrary precision:
+
+```rust
+use icrc_ledger_types::icrc1::account::Tokens;
+use num_bigint::BigUint;
+
+// Create token amount
+let amount = Tokens::from(1_000_000u64);
+
+// Work with large amounts
+let large_amount = Tokens::from(BigUint::from(10u64).pow(18));
+
+// Arithmetic operations
+let sum = amount + Tokens::from(500_000u64);
+let difference = amount - Tokens::from(200_000u64);
+```
+
+### Transfer Arguments
+
+```rust
+use icrc_ledger_types::icrc1::transfer::{TransferArg, TransferError};
+use candid::Nat;
+
+let transfer_args = TransferArg {
+    from_subaccount: None,
+    to: Account {
+        owner: recipient_principal,
+        subaccount: None,
+    },
+    fee: None, // Use default fee
+    created_at_time: None,
+    memo: None,
+    amount: Nat::from(1_000_000u64),
+};
+```
+
+## ICRC-1 Standard Methods
+
+### Balance Query
+
+```rust
+use icrc_ledger_types::icrc1::account::{Account, Tokens};
+use candid::Principal;
+
+// Query balance (from canister code)
+let account = Account {
+    owner: Principal::from_text("user-principal").unwrap(),
+    subaccount: None,
+};
+
+let balance: Tokens = ic_cdk::call(
+    ledger_canister_id,
+    "icrc1_balance_of",
+    (account,),
+)
+.await
+.unwrap();
+```
+
+### Transfer
+
+```rust
+use icrc_ledger_types::icrc1::transfer::{TransferArg, TransferResult};
+use candid::Nat;
+
+let transfer_args = TransferArg {
+    from_subaccount: None,
+    to: recipient_account,
+    fee: None,
+    created_at_time: None,
+    memo: None,
+    amount: Nat::from(1_000_000u64),
+};
+
+let result: TransferResult = ic_cdk::call(
+    ledger_canister_id,
+    "icrc1_transfer",
+    (transfer_args,),
+)
+.await
+.unwrap();
+
+match result {
+    Ok(block_index) => {
+        ic_cdk::println!("Transfer successful at block {}", block_index);
+    }
+    Err(transfer_error) => {
+        ic_cdk::println!("Transfer failed: {:?}", transfer_error);
+    }
+}
+```
+
+### Metadata
+
+```rust
+use icrc_ledger_types::icrc1::account::Metadata;
+
+let metadata: Vec<(String, Metadata)> = ic_cdk::call(
+    ledger_canister_id,
+    "icrc1_metadata",
+    (),
+)
+.await
+.unwrap();
+
+for (key, value) in metadata {
+    ic_cdk::println!("{}: {:?}", key, value);
+}
+```
+
+## ICRC-2 Approve & Transfer From
+
+ICRC-2 extends ICRC-1 with approval-based transfers:
+
+### Approve
+
+```rust
+use icrc_ledger_types::icrc2::approve::{ApproveArgs, ApproveError};
+use candid::Nat;
+
+let approve_args = ApproveArgs {
+    from_subaccount: None,
+    spender: spender_account,
+    amount: Nat::from(5_000_000u64),
+    expected_allowance: None,
+    expires_at: None,
+    fee: None,
+    memo: None,
+    created_at_time: None,
+};
+
+let result = ic_cdk::call(
+    ledger_canister_id,
+    "icrc2_approve",
+    (approve_args,),
+)
+.await
+.unwrap();
+```
+
+### Transfer From
+
+```rust
+use icrc_ledger_types::icrc2::transfer_from::{TransferFromArgs, TransferFromError};
+
+let transfer_from_args = TransferFromArgs {
+    spender_subaccount: None,
+    from: owner_account,
+    to: recipient_account,
+    amount: Nat::from(1_000_000u64),
+    fee: None,
+    memo: None,
+    created_at_time: None,
+};
+
+let result = ic_cdk::call(
+    ledger_canister_id,
+    "icrc2_transfer_from",
+    (transfer_from_args,),
+)
+.await
+.unwrap();
+```
+
+### Allowance Query
+
+```rust
+use icrc_ledger_types::icrc2::allowance::{AllowanceArgs, Allowance};
+
+let allowance_args = AllowanceArgs {
+    account: owner_account,
+    spender: spender_account,
+};
+
+let allowance: Allowance = ic_cdk::call(
+    ledger_canister_id,
+    "icrc2_allowance",
+    (allowance_args,),
+)
+.await
+.unwrap();
+
+ic_cdk::println!("Allowance: {}", allowance.allowance);
+if let Some(expires_at) = allowance.expires_at {
+    ic_cdk::println!("Expires at: {}", expires_at);
+}
+```
+
+## Account Identifiers
+
+Work with account identifiers and subaccounts:
+
+```rust
+use icrc_ledger_types::icrc1::account::Account;
+
+// Generate subaccount from index
+fn subaccount_from_index(index: u64) -> [u8; 32] {
+    let mut subaccount = [0u8; 32];
+    subaccount[24..32].copy_from_slice(&index.to_be_bytes());
+    subaccount
+}
+
+let account = Account {
+    owner: principal,
+    subaccount: Some(subaccount_from_index(0)),
+};
+```
+
+## Error Handling
+
+### Transfer Errors
+
+```rust
+use icrc_ledger_types::icrc1::transfer::TransferError;
+
+match transfer_result {
+    Ok(block_index) => {
+        // Success
+    }
+    Err(TransferError::BadFee { expected_fee }) => {
+        ic_cdk::println!("Bad fee, expected: {}", expected_fee);
+    }
+    Err(TransferError::InsufficientFunds { balance }) => {
+        ic_cdk::println!("Insufficient funds, balance: {}", balance);
+    }
+    Err(TransferError::TooOld) => {
+        ic_cdk::println!("Transaction too old");
+    }
+    Err(TransferError::Duplicate { duplicate_of }) => {
+        ic_cdk::println!("Duplicate transaction at block {}", duplicate_of);
+    }
+    Err(err) => {
+        ic_cdk::println!("Transfer error: {:?}", err);
+    }
+}
+```
+
+## Related Packages
+
+The ICRC ecosystem includes several complementary packages:
+
+### icrc-ledger-client
+
+For calling ICRC-1 ledgers from canister code:
+
+```bash
+cargo add icrc-ledger-client
+```
+
+Provides higher-level client functions for canister code.
+
+### icrc-ledger-agent
+
+For calling ICRC-1 ledgers from off-chain code:
+
+```bash
+cargo add icrc-ledger-agent
+```
+
+Provides agent-based client for JavaScript/TypeScript and Rust applications.
+
+### icrc-ledger-client-cdk
+
+CDK-specific utilities:
+
+```bash
+cargo add icrc-ledger-client-cdk
+```
+
+## Complete Example
+
+Here's a complete example of a canister that manages ICRC-1 tokens:
+
+```rust
+use candid::{CandidType, Deserialize, Principal, Nat};
+use ic_cdk_macros::*;
+use icrc_ledger_types::icrc1::account::Account;
+use icrc_ledger_types::icrc1::transfer::{TransferArg, TransferError};
+
+const LEDGER_CANISTER_ID: &str = "ryjl3-tyaaa-aaaaa-aaaba-cai";
+
+#[update]
+async fn transfer_tokens(
+    to: Principal,
+    amount: u64,
+) -> Result<Nat, String> {
+    let ledger_id = Principal::from_text(LEDGER_CANISTER_ID)
+        .map_err(|e| format!("Invalid principal: {}", e))?;
+    
+    let transfer_args = TransferArg {
+        from_subaccount: None,
+        to: Account {
+            owner: to,
+            subaccount: None,
+        },
+        fee: None,
+        created_at_time: None,
+        memo: None,
+        amount: Nat::from(amount),
+    };
+    
+    let (result,): (Result<Nat, TransferError>,) = ic_cdk::call(
+        ledger_id,
+        "icrc1_transfer",
+        (transfer_args,),
+    )
+    .await
+    .map_err(|e| format!("Call failed: {:?}", e))?;
+    
+    result.map_err(|e| format!("Transfer failed: {:?}", e))
+}
+
+#[query]
+async fn get_balance(account_owner: Principal) -> Result<Nat, String> {
+    let ledger_id = Principal::from_text(LEDGER_CANISTER_ID)
+        .map_err(|e| format!("Invalid principal: {}", e))?;
+    
+    let account = Account {
+        owner: account_owner,
+        subaccount: None,
+    };
+    
+    let (balance,): (Nat,) = ic_cdk::call(
+        ledger_id,
+        "icrc1_balance_of",
+        (account,),
+    )
+    .await
+    .map_err(|e| format!("Call failed: {:?}", e))?;
+    
+    Ok(balance)
+}
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Use Subaccounts for Organization">
+    Subaccounts allow a single principal to manage multiple balances. Use them to separate user funds, treasury balances, or different token pools.
+  </Accordion>
+  
+  <Accordion title="Handle Errors Gracefully">
+    Always handle `TransferError` cases explicitly. Check for insufficient funds, bad fees, and duplicate transactions.
+  </Accordion>
+  
+  <Accordion title="Set created_at_time for Deduplication">
+    Use `created_at_time` to prevent duplicate transactions. The ledger uses this field to detect replays.
+  </Accordion>
+  
+  <Accordion title="Check Allowances Before Transfer From">
+    Always verify allowances before calling `icrc2_transfer_from` to provide better error messages to users.
+  </Accordion>
+  
+  <Accordion title="Cache Ledger Metadata">
+    Ledger metadata (decimals, symbol, fee) rarely changes. Cache it to reduce cross-canister calls.
+  </Accordion>
+</AccordionGroup>
+
+## Standards Compliance
+
+<CardGroup cols={2}>
+  <Card title="ICRC-1 Standard" icon="book" href="https://github.com/dfinity/ICRC-1/tree/main/standards/ICRC-1">
+    Official ICRC-1 specification
+  </Card>
+  
+  <Card title="ICRC-2 Standard" icon="book" href="https://github.com/dfinity/ICRC-1/tree/main/standards/ICRC-2">
+    Approve and TransferFrom extension
+  </Card>
+  
+  <Card title="API Documentation" icon="code" href="https://docs.rs/icrc-ledger-types">
+    Complete type definitions on docs.rs
+  </Card>
+  
+  <Card title="Ledger Source Code" icon="github" href="https://github.com/dfinity/ic/tree/master/rs/rosetta-api/icrc1/ledger">
+    Reference implementation
+  </Card>
+</CardGroup>
+
+## Migration Guide
+
+If you're migrating from the legacy ICP ledger to ICRC-1:
+
+<Steps>
+  <Step title="Update Account Types">
+    Replace `AccountIdentifier` with `Account { owner, subaccount }`
+  </Step>
+  
+  <Step title="Update Transfer Methods">
+    Use `icrc1_transfer` instead of `send_dfx` or legacy transfer methods
+  </Step>
+  
+  <Step title="Handle New Error Types">
+    ICRC-1 has different error types than the legacy ledger
+  </Step>
+  
+  <Step title="Update Balance Queries">
+    Use `icrc1_balance_of` with `Account` type instead of `account_balance`
+  </Step>
+</Steps>
+
+<Info>
+The ICP ledger now supports both legacy methods and ICRC-1 methods for backward compatibility.
+</Info>

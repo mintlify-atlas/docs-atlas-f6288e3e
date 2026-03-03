@@ -1,0 +1,443 @@
+---
+title: 'Service Nervous System (SNS)'
+description: 'Technical reference for Service Nervous Systems - algorithmic DAOs for decentralized dapp governance'
+---
+
+## Overview
+
+A Service Nervous System (SNS) is an algorithmic DAO that allows developers to create decentralized, token-based governance systems for their dapps. Just as the Network Nervous System (NNS) controls the Internet Computer blockchain, SNSs enable decentralized control of individual dapps.
+
+<Info>
+For comprehensive guidance on deploying and managing an SNS, see the [official SNS documentation](https://internetcomputer.org/docs/current/developer-docs/integrations/sns/).
+</Info>
+
+## SNS Canisters
+
+An SNS deployment consists of five core canisters:
+
+### 1. Governance Canister
+
+Enables decentralized decision-making through proposals and voting.
+
+**Location**: `rs/sns/governance/`
+
+**Key Features**:
+- Neuron-based voting system
+- Proposal submission and execution
+- Configurable nervous system functions
+- Voting rewards distribution
+
+### 2. Root Canister
+
+Responsible for upgrading SNS canisters and controlling dapp canisters.
+
+**Location**: `rs/sns/root/`
+
+**Responsibilities**:
+- Upgrade SNS canisters via proposals
+- Manage controllers of dapp canisters
+- Coordinate multi-canister upgrades
+
+### 3. Swap Canister
+
+Facilitates the initial decentralization swap.
+
+**Location**: `rs/sns/swap/`
+
+**Purpose**:
+- Execute initial token distribution
+- Manage participation from Neurons' Fund
+- Handle ICP contributions and token allocation
+
+### 4. Ledger Canister
+
+Manages the SNS-specific governance token.
+
+**Features**:
+- ICRC-1 compliant token standard
+- Transaction history
+- Balance tracking
+- Transfer operations
+
+### 5. Index Canister
+
+Provides efficient account-to-transaction mapping.
+
+**Functionality**:
+- Index transactions by account
+- Fast balance queries
+- Transaction history lookup
+
+## SNS Governance
+
+### Neurons
+
+SNS neurons differ from NNS neurons with enhanced permission models:
+
+```protobuf
+message Neuron {
+  NeuronId id;                                    // Unique identifier
+  repeated NeuronPermission permissions;          // Multi-principal permissions
+  uint64 cached_neuron_stake_e8s;                // Staked tokens
+  uint64 created_timestamp_seconds;              // Creation time
+  uint64 aging_since_timestamp_seconds;          // Age tracking
+  
+  oneof dissolve_state {
+    uint64 when_dissolved_timestamp_seconds;      // Dissolving state
+    uint64 dissolve_delay_seconds;                // Non-dissolving state
+  }
+  
+  uint64 maturity_e8s_equivalent;                // Unstaked maturity
+  optional uint64 staked_maturity_e8s_equivalent; // Staked maturity
+  optional bool auto_stake_maturity;              // Auto-stake rewards
+  
+  uint64 voting_power_percentage_multiplier;     // Developer neuron multiplier
+  optional uint64 source_nns_neuron_id;          // CF participation tracking
+  optional uint64 vesting_period_seconds;        // Vesting duration
+}
+```
+
+### Neuron Permissions
+
+SNS neurons support fine-grained permissions for multiple principals:
+
+| Permission Type | Description |
+|----------------|-------------|
+| `CONFIGURE_DISSOLVE_STATE` | Start/stop dissolving, increase dissolve delay |
+| `MANAGE_PRINCIPALS` | Add/remove principals with permissions |
+| `SUBMIT_PROPOSAL` | Submit proposals on behalf of neuron |
+| `VOTE` | Vote and follow other neurons |
+| `DISBURSE` | Disburse neuron stake |
+| `SPLIT` | Split neuron into multiple neurons |
+| `MERGE_MATURITY` | Merge maturity into stake |
+| `DISBURSE_MATURITY` | Disburse maturity to account |
+| `STAKE_MATURITY` | Stake maturity rewards |
+| `MANAGE_VOTING_PERMISSION` | Grant/revoke voting permissions |
+
+```protobuf
+message NeuronPermission {
+  PrincipalId principal = 1;
+  repeated NeuronPermissionType permission_type = 2;
+}
+```
+
+### Vesting
+
+SNS neurons support vesting periods for long-term commitment:
+
+- Vesting neurons are non-dissolving
+- Cannot start dissolving until vesting period elapses
+- Enables commitments beyond maximum dissolve delay
+- Common for development teams to prove long-term alignment
+
+**Example**: Max dissolve delay = 1 year, vesting = 3 years → 4 year total commitment
+
+## Nervous System Functions
+
+SNS governance supports both native and custom functions:
+
+### Native Functions
+
+```protobuf
+message NervousSystemFunction {
+  uint64 id;                    // Function ID (0-999 reserved for native)
+  string name;                  // Short description
+  optional string description;  // Detailed explanation
+  
+  oneof function_type {
+    Empty native_nervous_system_function;
+    GenericNervousSystemFunction generic_nervous_system_function;
+  }
+}
+```
+
+### Generic Functions
+
+Custom governance functions that call external canisters:
+
+```protobuf
+message GenericNervousSystemFunction {
+  PrincipalId target_canister_id;           // Canister to call
+  optional string target_method_name;       // Method to execute
+  PrincipalId validator_canister_id;        // Validation canister
+  optional string validator_method_name;    // Validation method
+  optional Topic topic;                      // Proposal topic
+}
+```
+
+**Function ID Ranges**:
+- `0-999`: Reserved for native functions
+- `1000-u64::MAX`: Available for custom functions
+
+## Proposal System
+
+### Proposal Structure
+
+```protobuf
+message Proposal {
+  string title;                  // Max 256 bytes
+  string summary;                // Max 30,000 bytes
+  string url;                    // Optional reference URL
+  
+  oneof action {
+    Motion motion;
+    ManageNervousSystemParameters manage_nervous_system_parameters;
+    UpgradeSnsControlledCanister upgrade_sns_controlled_canister;
+    AddGenericNervousSystemFunction add_generic_nervous_system_function;
+    RemoveGenericNervousSystemFunction remove_generic_nervous_system_function;
+    ExecuteGenericNervousSystemFunction execute_generic_nervous_system_function;
+    // ... other actions
+  }
+}
+```
+
+### Proposal Actions
+
+#### Motion
+
+Non-binding guidance for ecosystem direction:
+
+```protobuf
+message Motion {
+  string motion_text;  // Max 100 KiB
+}
+```
+
+#### Upgrade SNS Controlled Canister
+
+Upgrade dapp canisters under SNS control:
+
+```protobuf
+message UpgradeSnsControlledCanister {
+  optional PrincipalId canister_id;
+  optional ChunkedCanisterWasm new_canister_wasm;
+  optional CanisterInstallMode canister_upgrade_arg;
+  optional bytes mode;
+}
+```
+
+#### Execute Generic Function
+
+Call custom nervous system functions:
+
+```protobuf
+message ExecuteGenericNervousSystemFunction {
+  uint64 function_id;  // Must be in range [1000, u64::MAX]
+  bytes payload;       // Function-specific payload
+}
+```
+
+## Topics
+
+SNS proposals are categorized by topics that determine voting behavior:
+
+```protobuf
+message Topic {
+  uint64 id;
+  string name;
+  optional string description;
+}
+```
+
+Common topics include:
+- Governance parameters
+- Canister upgrades
+- Treasury management
+- Custom functions
+
+## Following Mechanism
+
+### Following Structure
+
+```protobuf
+message Followee {
+  NeuronId neuron_id;
+  optional string alias;  // Human-readable identifier
+}
+
+message Neuron.TopicFollowees {
+  map<int32, FolloweesForTopic> topic_id_to_followees;
+}
+```
+
+### Automatic Voting
+
+When configured followees vote, the neuron automatically:
+1. Adopts the majority vote of followees
+2. Breaks ties deterministically
+3. Records the vote for reward calculation
+
+## Maturity Management
+
+### Maturity Types
+
+1. **Unstaked Maturity** (`maturity_e8s_equivalent`)
+   - Accumulated voting rewards
+   - Can be disbursed or staked
+   - Subject to maturity modulation
+
+2. **Staked Maturity** (`staked_maturity_e8s_equivalent`)
+   - Locked maturity contributing to voting power
+   - Converted to unstaked when neuron dissolves
+   - Earns additional rewards
+
+### Auto-Stake Maturity
+
+```protobuf
+optional bool auto_stake_maturity = 16;
+```
+
+When enabled, voting rewards are automatically staked to increase voting power.
+
+## Deployment Process
+
+### Prerequisites
+
+1. Prepare dapp canister(s)
+2. Define tokenomics parameters
+3. Configure nervous system parameters
+4. Create initial neuron distribution
+
+### SNS Launch Steps
+
+<Steps>
+  <Step title="Prepare Configuration">
+    Define SNS parameters including:
+    - Token name and symbol
+    - Voting parameters
+    - Initial neuron distribution
+    - Swap parameters
+  </Step>
+  
+  <Step title="Submit NNS Proposal">
+    Create SNS via NNS proposal to spawn SNS canisters
+  </Step>
+  
+  <Step title="Execute Decentralization Swap">
+    Run initial token swap to distribute governance tokens
+  </Step>
+  
+  <Step title="Transfer Dapp Control">
+    Assign dapp canister control to SNS root canister
+  </Step>
+</Steps>
+
+<Info>
+For detailed deployment instructions, see the [SNS deployment checklist](https://internetcomputer.org/docs/current/developer-docs/integrations/sns/tokenomics/sns-checklist).
+</Info>
+
+## Source Code Structure
+
+```
+rs/sns/
+├── governance/
+│   ├── src/
+│   │   ├── governance.rs      # Core governance logic (272KB)
+│   │   ├── proposal.rs        # Proposal handling (214KB)
+│   │   ├── neuron.rs          # Neuron operations
+│   │   ├── types.rs           # Type definitions (130KB)
+│   │   ├── following.rs       # Following mechanism
+│   │   └── reward.rs          # Reward distribution
+│   └── proto/                 # Protobuf definitions
+├── root/
+│   └── src/                   # Root canister implementation
+├── swap/
+│   └── src/                   # Decentralization swap logic
+├── init/
+│   └── src/                   # SNS initialization
+└── testing/
+    └── src/                   # Testing utilities
+```
+
+## Testing
+
+Before launching an SNS, thorough testing is essential:
+
+### Local Testing
+
+Use `dfx` to deploy a local SNS:
+
+```bash
+# Deploy SNS locally
+dfx deploy --network local
+
+# Initialize SNS with test parameters
+dfx canister call sns_governance init '(record { ... })'
+```
+
+### Integration Tests
+
+Run the SNS integration test suite:
+
+```bash
+cd rs/sns/integration_tests
+cargo test
+```
+
+<Warning>
+Test thoroughly before mainnet deployment. SNS control transfer is irreversible.
+</Warning>
+
+## Managing an SNS
+
+### Post-Launch Operations
+
+1. **Monitor Governance**: Track proposal activity and participation
+2. **Upgrade Canisters**: Submit upgrade proposals as needed
+3. **Adjust Parameters**: Modify governance parameters via proposals
+4. **Manage Treasury**: Handle SNS treasury operations
+
+### Using sns-quill
+
+Command-line tool for SNS interaction:
+
+```bash
+# Submit a proposal
+sns-quill make-proposal --proposal-path proposal.json
+
+# Vote on a proposal
+sns-quill vote --proposal-id 42 --vote yes
+
+# Query neuron state
+sns-quill neuron-info --neuron-id <id>
+```
+
+## External Resources
+
+<CardGroup cols={2}>
+  <Card title="SNS Documentation" icon="book" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/">
+    Official guide for getting an SNS
+  </Card>
+  
+  <Card title="SNS Deployment Checklist" icon="list-check" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/tokenomics/sns-checklist">
+    Step-by-step deployment preparation
+  </Card>
+  
+  <Card title="Testing Guide" icon="flask" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/testing/testing-before-launch">
+    How to test your SNS before launch
+  </Card>
+  
+  <Card title="Management Guide" icon="gear" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/managing/manage-sns-intro">
+    Managing your SNS post-launch
+  </Card>
+</CardGroup>
+
+## Key Differences from NNS
+
+| Feature | NNS | SNS |
+|---------|-----|-----|
+| **Scope** | Entire Internet Computer | Individual dapp |
+| **Token** | ICP | Custom governance token (ICRC-1) |
+| **Permissions** | Single controller per neuron | Multi-principal permissions |
+| **Functions** | Fixed set of NNS functions | Configurable + custom functions |
+| **Vesting** | Not supported | Vesting periods supported |
+| **Deployment** | Single instance | Multiple instances per dapp |
+| **Customization** | Standardized | Highly configurable |
+
+## Source Code Locations
+
+- **Main Directory**: `rs/sns/`
+- **Governance**: `rs/sns/governance/`
+- **Proto Definitions**: `rs/sns/governance/proto/ic_sns_governance/pb/v1/governance.proto`
+- **Shared Utilities**: `rs/nervous_system/common/`
+- **README**: `rs/sns/README.md`

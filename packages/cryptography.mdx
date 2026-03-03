@@ -1,0 +1,411 @@
+---
+title: Cryptography Packages
+description: Cryptographic utilities for the Internet Computer including signature verification and key management
+---
+
+The Internet Computer provides several cryptography packages for handling digital signatures, key management, and encryption. These packages are optimized for use in both canister code and off-chain applications.
+
+## Signature Verification
+
+Utilities for verifying signatures supported on the Internet Computer, including canister signatures.
+
+### Installation
+
+```bash
+cargo add ic-signature-verification
+```
+
+```toml
+[dependencies]
+ic-signature-verification = "0.2"
+```
+
+### Features
+
+- Verification of [canister signatures](https://internetcomputer.org/docs/current/references/ic-interface-spec#canister-signatures)
+- Support for all IC-supported signature schemes
+- Integration with IC certification primitives
+
+### Usage Example
+
+```rust
+use ic_signature_verification::*;
+
+// Verify a canister signature
+let result = verify_canister_signature(
+    &message,
+    &signature,
+    &public_key,
+    &root_public_key,
+);
+
+match result {
+    Ok(()) => println!("Signature is valid"),
+    Err(e) => eprintln!("Signature verification failed: {:?}", e),
+}
+```
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-signature-verification">
+  View complete API reference
+</Card>
+
+---
+
+## Ed25519
+
+A package for creating and verifying Ed25519 signatures on the Internet Computer.
+
+### Installation
+
+```bash
+cargo add ic-ed25519
+```
+
+```toml
+[dependencies]
+ic-ed25519 = "0.6"
+```
+
+### Features
+
+- Ed25519 key generation
+- Signature creation and verification
+- PEM format support
+- Integration with IC Principal types
+- Optional `rand` feature for key generation
+
+### Usage Example
+
+```rust
+use ic_ed25519::*;
+use rand::thread_rng;
+
+// Generate a new keypair
+let mut rng = thread_rng();
+let keypair = Ed25519KeyPair::generate(&mut rng);
+
+// Sign a message
+let message = b"Hello, Internet Computer!";
+let signature = keypair.sign(message);
+
+// Verify the signature
+let public_key = keypair.public_key();
+assert!(public_key.verify(message, &signature).is_ok());
+
+// Export to PEM format
+let pem_string = keypair.to_pem();
+```
+
+### Key Derivation
+
+```rust
+use ic_ed25519::PrivateKey;
+
+// Derive keys using HKDF
+let master_key = PrivateKey::generate(&mut rng);
+let derived_key = master_key.derive_subkey(b"context-info");
+```
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-ed25519">
+  View complete API reference
+</Card>
+
+---
+
+## Secp256k1
+
+Handling of ECDSA and Schnorr keys over the secp256k1 curve (used by Bitcoin).
+
+### Installation
+
+```bash
+cargo add ic-secp256k1
+```
+
+```toml
+[dependencies]
+ic-secp256k1 = "0.3"
+```
+
+### Features
+
+- ECDSA signature creation and verification
+- Schnorr signature support
+- Bitcoin address derivation
+- BIP32 HD wallet support
+- PEM format import/export
+- Integration with IC Principal types
+
+### ECDSA Usage
+
+```rust
+use ic_secp256k1::*;
+use rand::thread_rng;
+
+// Generate a keypair
+let mut rng = thread_rng();
+let keypair = Secp256k1KeyPair::generate(&mut rng);
+
+// Sign a message with ECDSA
+let message = b"Transaction data";
+let signature = keypair.sign_ecdsa(message);
+
+// Verify ECDSA signature
+let public_key = keypair.public_key();
+assert!(public_key.verify_ecdsa(message, &signature).is_ok());
+```
+
+### Schnorr Signatures
+
+```rust
+// Sign with Schnorr
+let schnorr_sig = keypair.sign_schnorr(message, &mut rng);
+
+// Verify Schnorr signature
+assert!(public_key.verify_schnorr(message, &schnorr_sig).is_ok());
+```
+
+### Bitcoin Address Derivation
+
+```rust
+use ic_secp256k1::PublicKey;
+
+let public_key = keypair.public_key();
+
+// Derive P2PKH address
+let p2pkh_address = public_key.to_p2pkh_address();
+println!("P2PKH Address: {}", p2pkh_address);
+
+// Derive P2WPKH (SegWit) address
+let p2wpkh_address = public_key.to_p2wpkh_address();
+println!("P2WPKH Address: {}", p2wpkh_address);
+```
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-secp256k1">
+  View complete API reference
+</Card>
+
+---
+
+## Secp256r1
+
+Handling of ECDSA keys over the secp256r1 (P-256) curve.
+
+### Installation
+
+```bash
+cargo add ic-secp256r1
+```
+
+```toml
+[dependencies]
+ic-secp256r1 = "0.2"
+```
+
+### Features
+
+- ECDSA signature creation and verification over P-256
+- NIST P-256 curve support
+- PEM format support
+- Key derivation functions
+- WebAuthn compatibility
+
+### Usage Example
+
+```rust
+use ic_secp256r1::*;
+use rand::thread_rng;
+
+// Generate a P-256 keypair
+let mut rng = thread_rng();
+let keypair = Secp256r1KeyPair::generate(&mut rng);
+
+// Sign a message
+let message = b"Important message";
+let signature = keypair.sign(message);
+
+// Verify signature
+let public_key = keypair.public_key();
+assert!(public_key.verify(message, &signature).is_ok());
+
+// Export to PEM
+let pem_private = keypair.to_pem();
+let pem_public = public_key.to_pem();
+```
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-secp256r1">
+  View complete API reference
+</Card>
+
+---
+
+## HPKE
+
+Hybrid Public Key Encryption for secure message encryption to a recipient public key.
+
+### Installation
+
+```bash
+cargo add ic-hpke
+```
+
+```toml
+[dependencies]
+ic-hpke = "0.1"
+```
+
+### Features
+
+- HPKE encryption and decryption
+- P-384 curve support
+- Authenticated encryption
+- Key encapsulation mechanism (KEM)
+
+### Usage Example
+
+```rust
+use ic_hpke::*;
+
+// Recipient generates a keypair
+let (recipient_private_key, recipient_public_key) = generate_keypair();
+
+// Sender encrypts a message
+let message = b"Secret message";
+let (encapsulated_key, ciphertext) = encrypt(
+    &recipient_public_key,
+    message,
+    b"additional_data",
+)?;
+
+// Recipient decrypts the message
+let plaintext = decrypt(
+    &recipient_private_key,
+    &encapsulated_key,
+    &ciphertext,
+    b"additional_data",
+)?;
+
+assert_eq!(plaintext, message);
+```
+
+<Info>
+HPKE combines the security of public key encryption with the efficiency of symmetric encryption, making it ideal for encrypting messages to multiple recipients.
+</Info>
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-hpke">
+  View complete API reference
+</Card>
+
+---
+
+## SHA-3
+
+SHA-3 and Keccak hashing utilities with convenience methods for the Internet Computer.
+
+### Installation
+
+```bash
+cargo add ic-sha3
+```
+
+```toml
+[dependencies]
+ic-sha3 = "1.0"
+```
+
+### Features
+
+- SHA-3 family (SHA3-224, SHA3-256, SHA3-384, SHA3-512)
+- Keccak-256 (Ethereum-compatible)
+- Convenience wrapper methods
+- Optimized for IC canisters
+
+### Usage Example
+
+```rust
+use ic_sha3::Sha3_256;
+
+// Hash with SHA3-256
+let data = b"data to hash";
+let hash = Sha3_256::hash(data);
+
+println!("SHA3-256: {}", hex::encode(hash));
+```
+
+### Keccak-256 (Ethereum)
+
+```rust
+use ic_sha3::Keccak256;
+
+// Compute Ethereum-compatible Keccak-256
+let data = b"ethereum data";
+let hash = Keccak256::hash(data);
+
+println!("Keccak-256: {}", hex::encode(hash));
+```
+
+<Card title="API Documentation" icon="book" href="https://docs.rs/ic-sha3">
+  View complete API reference
+</Card>
+
+---
+
+## Comparison Chart
+
+| Package | Use Case | Curve/Algorithm | Primary Function |
+|---------|----------|-----------------|------------------|
+| **ic-signature-verification** | Verify IC signatures | Various | Signature verification |
+| **ic-ed25519** | General signing | Ed25519 | Fast, secure signatures |
+| **ic-secp256k1** | Bitcoin integration | secp256k1 | ECDSA, Schnorr, BTC addresses |
+| **ic-secp256r1** | WebAuthn, NIST | P-256 | NIST-standard ECDSA |
+| **ic-hpke** | Secure messaging | P-384 | Hybrid encryption |
+| **ic-sha3** | Hashing | SHA-3, Keccak | Cryptographic hashing |
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Choose the Right Curve">
+    - Use **Ed25519** for general-purpose signing (fastest, most secure)
+    - Use **secp256k1** for Bitcoin/cryptocurrency integration
+    - Use **secp256r1** (P-256) for WebAuthn or NIST compliance
+  </Accordion>
+  
+  <Accordion title="Key Management">
+    - Never hardcode private keys in your code
+    - Use secure random number generators from the `rand` crate
+    - Store keys securely, preferably in hardware security modules
+    - Use key derivation for hierarchical key structures
+  </Accordion>
+  
+  <Accordion title="Signature Verification">
+    - Always verify signatures before trusting signed data
+    - Use constant-time comparison functions to prevent timing attacks
+    - Validate public keys before use
+  </Accordion>
+  
+  <Accordion title="Canister Security">
+    - Use `ic-signature-verification` for verifying canister signatures
+    - Be aware of the randomness limitations in canister code
+    - Consider using threshold signatures for high-value operations
+  </Accordion>
+</AccordionGroup>
+
+## Additional Resources
+
+<CardGroup cols={2}>
+  <Card title="IC Cryptography" icon="shield" href="https://internetcomputer.org/docs/current/references/ic-interface-spec#signatures">
+    IC Interface Specification
+  </Card>
+  
+  <Card title="Threshold Signatures" icon="key" href="https://internetcomputer.org/how-it-works/chain-key-technology/">
+    Chain Key Technology
+  </Card>
+  
+  <Card title="Bitcoin Integration" icon="bitcoin" href="https://internetcomputer.org/docs/current/developer-docs/integrations/bitcoin/">
+    Bitcoin on ICP
+  </Card>
+  
+  <Card title="WebAuthn" icon="fingerprint" href="https://internetcomputer.org/docs/current/developer-docs/integrations/internet-identity/">
+    Internet Identity Integration
+  </Card>
+</CardGroup>

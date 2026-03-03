@@ -1,0 +1,294 @@
+---
+title: Types Reference
+description: Core type definitions in the Internet Computer Rust implementation
+---
+
+The `rs/types/` directory contains fundamental type definitions used throughout the IC replica. These crates provide the data structures that represent protocol entities, messages, and system state.
+
+## Core Types Crates
+
+### ic-base-types
+
+Provides fundamental identifier and quantity types used across the entire codebase.
+
+**Location**: `rs/types/base_types/`
+
+**Key Types**:
+
+```rust
+// Identifier types using phantom types
+pub type NodeId = Id<NodeTag, PrincipalId>;
+pub type SubnetId = Id<SubnetTag, PrincipalId>;
+pub type CanisterId = /* ... */;
+pub type PrincipalId = /* ... */;
+
+// Quantity types
+pub type RegistryVersion = AmountOf<RegistryVersionTag, u64>;
+pub type NumBytes = AmountOf<NumBytesTag, u64>;
+pub type NumSeconds = AmountOf<NumSecondsTag, u64>;
+pub type NumOsPages = AmountOf<NumOsPagesTag, u64>;
+```
+
+**Features**:
+- Type-safe identifiers using phantom types from `phantom_newtype`
+- Principal ID parsing and validation
+- Canister ID conversion and serialization
+- Formatted display for byte quantities (e.g., "123.45 MiB")
+- Protobuf conversion support
+
+**Dependencies**:
+- `phantom_newtype` - Zero-cost wrapper types
+- `ic-crypto-sha2` - Hashing utilities
+- `candid` - Candid serialization
+- `serde` - General serialization
+
+### ic-types
+
+Comprehensive type library for messages, consensus, crypto, and state management.
+
+**Location**: `rs/types/types/`
+
+**Module Structure**:
+
+```rust
+pub mod artifact;           // Consensus artifacts
+pub mod batch;              // Batch payloads
+pub mod canister_http;      // HTTP outcalls
+pub mod canister_log;       // Canister logging
+pub mod consensus;          // Consensus types
+pub mod crypto;             // Cryptographic types
+pub mod cycles;             // Cycles accounting
+pub mod hostos_version;     // OS version tracking
+pub mod ingress;            // Ingress messages
+pub mod malicious_behavior; // Testing/malicious scenarios
+pub mod malicious_flags;    // Malicious behavior flags
+pub mod messages;           // Inter-canister messages
+pub mod methods;            // Method name constants
+pub mod nominal_cycles;     // Nominal cycle amounts
+pub mod registry;           // Registry types
+pub mod replica_config;     // Replica configuration
+pub mod replica_version;    // Replica version info
+pub mod signature;          // Signature types
+pub mod state_manager;      // State management
+pub mod state_sync;         // State synchronization
+pub mod time;               // Time types
+pub mod xnet;               // Cross-subnet messaging
+```
+
+#### Message Types
+
+**Location**: `rs/types/types/src/messages/`
+
+Key message structures:
+
+```rust
+// Ingress messages (user → canister)
+pub struct SignedIngress {
+    pub ingress: Ingress,
+    pub signature: Vec<u8>,
+}
+
+// Inter-canister messages
+pub enum Request {
+    Ingress(Ingress),
+    Call(RequestOrResponse),
+}
+
+pub enum Response {
+    Reply(Reply),
+    Reject(Reject),
+}
+
+// HTTP-related types
+pub struct HttpRequest { /* ... */ }
+pub struct HttpResponse { /* ... */ }
+
+// WebAuthn support
+pub struct WebAuthnEnvelope { /* ... */ }
+```
+
+**Message Modules**:
+- `ingress_messages` - User-submitted ingress
+- `inter_canister` - Canister-to-canister calls
+- `query` - Query call handling
+- `read_state` - Read state requests
+- `http` - HTTP outcall types
+- `webauthn` - WebAuthn authentication
+- `message_id` - Message identification
+- `blob` - Binary data handling
+
+#### Crypto Types
+
+**Location**: `rs/types/types/src/crypto/`
+
+```rust
+// Threshold signatures
+pub mod threshold_sig {
+    pub struct ThresholdSigPublicKey { /* ... */ }
+    
+    // Non-interactive DKG
+    pub mod ni_dkg {
+        pub struct NiDkgId { /* ... */ }
+        pub struct NiDkgConfig { /* ... */ }
+        pub struct NiDkgTranscript { /* ... */ }
+    }
+}
+
+// Canister threshold signatures (t-ECDSA, t-Schnorr)
+pub mod canister_threshold_sig {
+    pub mod idkg {
+        pub struct IDkgTranscript { /* ... */ }
+        pub struct IDkgTranscriptId { /* ... */ }
+        pub struct IDkgTranscriptParams { /* ... */ }
+    }
+}
+
+// VetKD (Vetted Key Derivation)
+pub mod vetkd {
+    pub struct VetKdConfig { /* ... */ }
+}
+
+// Basic signatures
+pub mod sign {
+    pub struct BasicSignature { /* ... */ }
+}
+
+// Hashing
+pub mod hash {
+    pub struct CryptoHash { /* ... */ }
+    pub mod domain_separator { /* ... */ }
+}
+```
+
+**Crypto Error Types**:
+- Comprehensive error enums for signature verification
+- DKG-specific errors (dealing creation, transcript loading)
+- Threshold signature errors
+
+#### Consensus Types
+
+**Location**: `rs/types/types/src/consensus.rs`
+
+Core consensus data structures for the IC's Byzantine fault-tolerant protocol.
+
+#### Registry Types
+
+**Location**: `rs/types/types/src/registry.rs`
+
+Types for registry queries and updates:
+
+```rust
+pub struct RegistryClientError { /* ... */ }
+pub struct RegistryDataProviderError { /* ... */ }
+```
+
+#### Time Types
+
+**Location**: `rs/types/types/src/time.rs`
+
+```rust
+pub struct Time {
+    nanos_since_epoch: u64,
+}
+
+impl Time {
+    pub const UNIX_EPOCH: Time = Time { nanos_since_epoch: 0 };
+    pub fn from_nanos_since_unix_epoch(nanos: u64) -> Self { /* ... */ }
+    pub fn as_nanos_since_unix_epoch(&self) -> u64 { /* ... */ }
+}
+```
+
+### ic-wasm-types
+
+WebAssembly-specific type definitions.
+
+**Location**: `rs/types/wasm_types/`
+
+**Key Types**:
+
+```rust
+pub struct WasmHash { /* ... */ }
+pub struct BinaryEncodedWasm { /* ... */ }
+```
+
+**Error Types**:
+- `WasmValidationError` - WASM validation failures
+- `WasmInstrumentationError` - Instrumentation errors
+
+### ic-management-canister-types
+
+Types for the management canister API.
+
+**Location**: `rs/types/management_canister_types/`
+
+Provides types for:
+- Canister lifecycle management
+- Settings and controllers
+- Snapshot operations
+- Bitcoin integration
+- ECDSA signing
+- HTTP outcalls
+
+## Type Design Patterns
+
+### Phantom Types
+
+Many ID types use phantom type parameters for type safety:
+
+```rust
+// Can't accidentally use a NodeId as a SubnetId
+let node_id: NodeId = /* ... */;
+let subnet_id: SubnetId = /* ... */;
+// node_id == subnet_id; // Compile error!
+```
+
+### Newtype Pattern
+
+Quantity types wrap primitives:
+
+```rust
+pub type NumBytes = AmountOf<NumBytesTag, u64>;
+
+let bytes = NumBytes::new(1024);
+let value: u64 = bytes.get();
+```
+
+### Protobuf Integration
+
+Most types support conversion to/from protobuf:
+
+```rust
+impl From<Type> for pb::Type { /* ... */ }
+impl TryFrom<pb::Type> for Type { /* ... */ }
+```
+
+## Testing Utilities
+
+### ic-types-test-utils
+
+**Location**: `rs/types/types_test_utils/`
+
+Provides:
+- Arbitrary instance generation for property testing
+- ID generators for tests
+- Mock data builders
+
+## Serialization Support
+
+Types support multiple serialization formats:
+
+- **Candid** - For inter-canister communication
+- **Protobuf** - For internal protocol messages
+- **CBOR** - For state certification
+- **Serde** - General-purpose (JSON, etc.)
+
+## Related Crates
+
+- [Interfaces Reference](/reference/interfaces) - Trait definitions using these types
+- [Registry Reference](/reference/registry) - Registry-specific types and usage
+
+## See Also
+
+- Source: `rs/types/base_types/src/lib.rs`
+- Source: `rs/types/types/src/lib.rs`
+- [Phantom Newtype Pattern](https://github.com/dfinity/phantom-newtype)

@@ -1,0 +1,488 @@
+---
+title: Bazel Build System
+description: Understanding Bazel configuration, modules, and build settings for the Internet Computer Protocol
+---
+
+The Internet Computer uses [Bazel](https://bazel.build/) as its build system, providing hermetic, reproducible builds across the entire monorepo.
+
+## Bazel Version
+
+The IC uses Bazel 8.6.0, specified in `.bazelversion`:
+
+```text .bazelversion
+8.6.0
+```
+
+<Note>
+Bazel version is strictly enforced. Use [Bazelisk](https://github.com/bazelbuild/bazelisk) to automatically use the correct version.
+</Note>
+
+## Configuration Files
+
+The Bazel configuration is split across multiple files:
+
+### `.bazelrc` (Root)
+
+The root `.bazelrc` imports configuration fragments:
+
+```python .bazelrc
+import %workspace%/bazel/conf/.bazelrc.build
+import %workspace%/bazel/conf/.bazelrc.internal
+try-import %workspace%/user.bazelrc
+```
+
+### `MODULE.bazel`
+
+Defines the project as a Bazel module with dependencies:
+
+```python MODULE.bazel
+module(
+    name = "ic",
+)
+```
+
+Key module dependencies include:
+
+- **bazel_skylib** (1.8.2) - Common Bazel utilities
+- **rules_rust** - Rust language support
+- **rules_python** (1.4.1) - Python 3.12 support
+- **rules_go** (0.50.1) - Go language support
+- **rules_oci** (2.0.0) - Container image building
+- **hermetic_cc_toolchain** (4.1.0) - C/C++ hermetic builds
+
+### `BUILD.bazel`
+
+Root build file defining top-level targets and aliases:
+
+```python BUILD.bazel
+package(default_visibility = ["//visibility:public"])
+
+alias(
+    name = "buildifier",
+    actual = "//bazel:buildifier",
+)
+
+alias(
+    name = "rustfmt",
+    actual = "@rules_rust//:rustfmt",
+)
+```
+
+## Build Configurations
+
+### Standard Configurations
+
+The build system provides several configuration presets:
+
+#### Optimized Build (Default)
+
+```bash
+bazel build --compilation_mode=opt //rs/replica
+```
+
+From `.bazelrc.build`:
+
+```python
+build --compilation_mode=opt
+build --@rules_rust//:extra_rustc_flags=-Cdebug-assertions=on
+build --strip=never  # Keep debug symbols
+```
+
+#### Development Build
+
+Faster compilation for development:
+
+```bash
+bazel build --config=dev //rs/replica
+```
+
+```python
+build:dev --compilation_mode=fastbuild
+```
+
+#### Release Build with Stamping
+
+For official releases:
+
+```bash
+bazel build --config=stamped //publish/binaries:bundle
+```
+
+```python
+common:stamped --workspace_status_command='$(pwd)/bazel/workspace_status.sh --stamp'
+```
+
+### Linting Configurations
+
+#### Clippy (Rust Linter)
+
+```bash
+bazel build --config=clippy //rs/...
+```
+
+Configuration:
+
+```python
+build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:clippy --output_groups=+clippy_checks
+build --@rules_rust//:clippy_flags=-D,warnings,-D,clippy::all,-D,clippy::mem_forget
+```
+
+#### Rustfmt (Rust Formatter)
+
+```bash
+bazel build --config=fmt //rs/...
+```
+
+Configuration:
+
+```python
+build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect
+build:fmt --output_groups=+rustfmt_checks
+build --@rules_rust//:rustfmt.toml=//:rustfmt.toml
+```
+
+#### Combined Linting
+
+```bash
+bazel build --config=lint //rs/...
+```
+
+Implies both `--config=fmt` and `--config=clippy`.
+
+### Fuzzing Configurations
+
+#### LibFuzzer
+
+```bash
+bazel build --config=fuzzing //rs/...
+```
+
+```python
+build:fuzzing --@rules_rust//rust/settings:extra_rustc_env=RUSTC_BOOTSTRAP=1
+build:fuzzing --build_tag_filters=fuzz_test
+```
+
+#### AFL (American Fuzzy Lop)
+
+```bash
+bazel build --config=afl //rs/...
+```
+
+```python
+build:afl --action_env="CC=afl-clang-lto"
+build:afl --action_env="CXX=afl-clang-lto++"
+build:afl --hermetic_cc=false
+build:afl --build_tag_filters=afl
+```
+
+## Language Support
+
+### Rust
+
+Rust is the primary language for the IC replica:
+
+```python MODULE.bazel
+include("//bazel:rust.MODULE.bazel")
+```
+
+Workspace configuration in `Cargo.toml`:
+
+```toml Cargo.toml
+[workspace]
+resolver = "2"
+
+members = [
+    "rs/replica",
+    "rs/consensus",
+    "rs/crypto",
+    # ... 500+ members
+]
+
+[workspace.package]
+version = "0.9.0"
+edition = "2024"
+```
+
+<Note>
+The workspace contains 500+ Rust packages managed through Cargo workspace dependency inheritance.
+</Note>
+
+### Python
+
+Python 3.12 support:
+
+```python MODULE.bazel
+python_version = "3.12"
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = python_version)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "python_deps",
+    python_version = python_version,
+    requirements_lock = "//:requirements.txt",
+)
+```
+
+### Go
+
+Go language support:
+
+```python MODULE.bazel
+bazel_dep(name = "rules_go", version = "0.50.1")
+bazel_dep(name = "gazelle", version = "0.38.0")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//:go.mod")
+```
+
+## Hermetic C++ Toolchain
+
+The IC uses hermetic C++ toolchains based on Zig:
+
+```python MODULE.bazel
+bazel_dep(name = "hermetic_cc_toolchain", version = "4.1.0")
+
+toolchains = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
+toolchains.extra_target_settings(settings = ["//bazel:use_hermetic_cc"])
+
+register_toolchains(
+    # Linux toolchains
+    "@zig_sdk//toolchain:linux_amd64_gnu.2.31",
+    "@zig_sdk//toolchain:linux_arm64_gnu.2.31",
+    # wasm toolchains
+    "@zig_sdk//toolchain:none_wasm",
+)
+```
+
+### Zig Cache Configuration
+
+To speed up compilation, the Zig cache is shared across builds:
+
+```python .bazelrc.build
+build --repo_env=HERMETIC_CC_TOOLCHAIN_CACHE_PREFIX=/tmp/zig-cache
+build --sandbox_add_mount_pair=/tmp/zig-cache
+build --sandbox_writable_path=/tmp/zig-cache
+```
+
+<Warning>
+Ensure `/tmp` has sufficient space (10-20 GB) for the Zig cache.
+</Warning>
+
+## Container Image Management
+
+Docker/OCI images are pulled and managed through rules_oci:
+
+```python MODULE.bazel
+bazel_dep(name = "rules_oci", version = "2.0.0")
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+
+oci.pull(
+    name = "bitcoind",
+    image = "ghcr.io/dfinity/kylemanna/bitcoind@sha256:...",
+    platforms = ["linux/amd64"],
+)
+```
+
+Images are mirrored to GitHub Container Registry (GHCR) for reliability.
+
+## External Dependencies
+
+### Binary Tools
+
+External binaries are downloaded and made available:
+
+<CodeGroup>
+```python Bitcoin Core
+http_archive(
+    name = "bitcoin_core_linux_x86",
+    urls = ["https://bitcoin.org/bin/bitcoin-core-27.0/bitcoin-27.0-x86_64-linux-gnu.tar.gz"],
+    sha256 = "2a6974c5486f528793c79d42694b5987401e4a43c97f62b1383abf35bcee44a8",
+    strip_prefix = "bitcoin-27.0",
+)
+```
+
+```python DFX SDK
+http_archive(
+    name = "dfx-x86_64-linux",
+    url = "https://github.com/dfinity/sdk/releases/download/0.29.2/dfx-0.29.2-x86_64-linux.tar.gz",
+    sha256 = "d1473ae15ece44e782f0f2f8ac586ead349fe434189df8b587eb738becce0138",
+)
+```
+</CodeGroup>
+
+### Canisters
+
+Pre-built canisters for testing:
+
+```python MODULE.bazel
+http_file(
+    name = "btc_canister",
+    downloaded_file_path = "ic-btc-canister.wasm.gz",
+    sha256 = "f18d28cbebf49cbd2b6a3dba8f6da1399b95714c7cf100d3fb31ba9c33941daa",
+    url = "https://github.com/dfinity/bitcoin-canister/releases/download/release/2024-07-28/ic-btc-canister.wasm.gz",
+)
+```
+
+## Build Targets
+
+### Publishing Targets
+
+Main targets for building release artifacts:
+
+```python BUILD.bazel
+upload_artifacts(
+    name = "upload-artifacts",
+    inputs = [
+        "//publish/binaries:bundle",
+        "//publish/canisters:bundle",
+        "//ic-os/guestos/envs/prod:bundle-update",
+        "//ic-os/hostos/envs/prod:bundle-update",
+        "//ic-os/setupos/envs/prod:bundle",
+    ],
+)
+```
+
+### Aliases
+
+Common aliases for convenience:
+
+```python BUILD.bazel
+alias(
+    name = "gen_rust_project",
+    actual = "@rules_rust//tools/rust_analyzer:gen_rust_project",
+)
+
+alias(
+    name = "bitcoind",
+    actual = select({
+        "@bazel_tools//src/conditions:linux_x86_64": "@bitcoin_core_linux_x86//:bitcoind",
+        "@bazel_tools//src/conditions:darwin_arm64": "@bitcoin_core_darwin_arm64//:bitcoind",
+    }),
+)
+```
+
+## Test Configuration
+
+### Default Test Settings
+
+```python .bazelrc.build
+test --test_output=errors
+test --flaky_test_attempts=1
+```
+
+### Flaky Test Detection
+
+```python .bazelrc.build
+common:flaky_retry --flaky_test_attempts=.*,-//pre-commit:.*@3
+```
+
+Tests automatically retry up to 3 times to detect flakiness.
+
+### Tag Filters
+
+Exclude fuzz tests by default:
+
+```python .bazelrc.build
+build --build_tag_filters="-fuzz_test"
+test --test_tag_filters="-fuzz_test"
+```
+
+### Pre-commit Tests
+
+```bash
+bazel test --config=precommit //...
+```
+
+```python
+test:precommit --build_tests_only --test_tag_filters="smoke"
+```
+
+## Query and Analysis
+
+### Query Targets
+
+```bash
+# List all targets in a package
+bazel query //rs/replica/...
+
+# Find dependencies
+bazel query 'deps(//rs/replica:replica)'
+
+# Find reverse dependencies  
+bazel query 'rdeps(//..., //rs/types/...)'
+```
+
+### Cquery (Configuration-Aware)
+
+```bash
+# Query with configuration
+bazel cquery --config=stamped //publish/binaries:bundle
+
+# Get output files
+bazel cquery --output=files //publish/binaries:bundle
+```
+
+### Suppressed Output
+
+Query commands suppress extra output:
+
+```python .bazelrc.build
+query --ui_event_filters=-info,-debug --noshow_progress
+cquery --ui_event_filters=-info,-debug --noshow_progress
+```
+
+## Workspace Status
+
+Build stamping with version information:
+
+```python .bazelrc.build
+build --workspace_status_command='$(pwd)/bazel/workspace_status.sh'
+```
+
+The script provides:
+- Git commit hash
+- Build timestamp
+- Release version
+- Branch information
+
+## Environment Variables
+
+### Build Environment
+
+```python .bazelrc.build
+build --incompatible_strict_action_env  # Static PATH
+common --test_env=RUST_BACKTRACE=full
+common --test_env=CLICOLOR_FORCE=true
+```
+
+### Test Environment
+
+Common test environment variables:
+
+```python
+common --test_env=CLICOLOR_FORCE=true
+common --test_env=RUST_BACKTRACE=full
+```
+
+## User Configuration
+
+Create a `user.bazelrc` for personal settings (not version controlled):
+
+```python user.bazelrc
+# Custom build settings
+build --jobs=8
+test --test_output=all
+
+# Remote cache
+build --remote_cache=grpc://localhost:9092
+```
+
+## Next Steps
+
+- [Building the Replica](/build/building-replica) - Use Bazel to build components
+- [Build Verification](/build/verification) - Verify reproducible builds
+- [Bazel Documentation](https://bazel.build/) - Official Bazel docs

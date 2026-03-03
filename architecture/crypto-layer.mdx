@@ -1,0 +1,373 @@
+---
+title: Cryptography Layer
+description: Comprehensive overview of the Internet Computer's cryptographic primitives and operations
+---
+
+The crypto component provides all cryptographic operations required by Internet Computer nodes, including key generation, signing, verification, TLS, and threshold cryptography.
+
+## Overview
+
+The cryptography layer is a critical foundation that enables:
+- **Node identity** through signing keys
+- **Secure communication** via TLS
+- **Distributed consensus** using threshold signatures
+- **Key distribution** through DKG protocols
+- **Random number generation** for protocol fairness
+
+**Location**: `rs/crypto/`
+
+## Architecture
+
+### CryptoComponent
+
+The main interface for all crypto operations:
+
+```rust
+pub struct CryptoComponentImpl<C: CryptoServiceProvider> {
+    lockable_threshold_sig_data_store: LockableThresholdSigDataStore,
+    vault: Arc<dyn CspVault>,
+    csp: C,
+    registry_client: Arc<dyn RegistryClient>,
+    node_id: NodeId,
+    logger: ReplicaLogger,
+    metrics: Arc<CryptoMetrics>,
+    time_source: Arc<dyn TimeSource>,
+}
+```
+
+*Reference*: `rs/crypto/src/lib.rs:54`
+
+### Key Components
+
+#### 1. Crypto Service Provider (CSP)
+
+Internal implementation layer that:
+- Handles all cryptographic operations
+- Manages interaction with the vault
+- Implements specific signature schemes
+- Provides algorithm implementations
+
+#### 2. Secret Key Store (Vault)
+
+Secure storage for secret keys:
+- **In-process vault**: Keys stored in local file with encryption
+- **Remote vault**: Keys stored in separate process via Unix socket
+- Provides HSM-like separation of secret material
+- Controls access to signing operations
+
+```rust
+let vault = vault_from_config(
+    config,
+    tokio_runtime_handle,
+    logger,
+    metrics,
+);
+```
+
+*Reference*: `rs/crypto/src/lib.rs:191-196`
+
+#### 3. Threshold Signature Data Store
+
+Caches data required for threshold signature verification:
+
+```rust
+pub struct LockableThresholdSigDataStore {
+    threshold_sig_data_store: RwLock<ThresholdSigDataStoreImpl>,
+}
+```
+
+*Reference*: `rs/crypto/src/lib.rs:70-72`
+
+**Capacity**: Maximum entries per tag (DKG tag or key):
+```rust
+pub const THRESHOLD_SIG_DATA_STORE_CAPACITY_PER_TAG: usize = 
+    ThresholdSigDataStoreImpl::CAPACITY_PER_TAG_OR_KEY;
+```
+
+*Reference*: `rs/crypto/src/lib.rs:44-45`
+
+## Cryptographic Operations
+
+### 1. Basic Signatures
+
+Standard single-signer digital signatures:
+- **Algorithm**: Ed25519
+- **Use case**: Node identity, message authentication
+- **Performance**: Fast signing and verification
+
+### 2. Multi-Signatures
+
+Combining multiple individual signatures:
+- Aggregate multiple signatures into one
+- Useful for batch verification
+- Reduces proof size
+
+### 3. Threshold Signatures
+
+Distributed signing requiring cooperation:
+- **Individual shares**: Each node signs with their share
+- **Combination**: Shares combined into single signature
+- **Threshold**: Minimum shares needed (typically f+1)
+- **Verification**: Single public key verifies combined signature
+
+See [Threshold Signatures](/architecture/threshold-signatures) for details.
+
+### 4. Non-Interactive DKG (NI-DKG)
+
+Distributed key generation without rounds:
+- **Dealers**: Create and distribute key shares
+- **Receivers**: Obtain their share of the secret key
+- **Public output**: Public coefficients for verification
+- **Resharing**: Update keys without changing public key
+
+See [DKG](/architecture/dkg) for details.
+
+### 5. Interactive DKG (IDKG)
+
+Advanced threshold cryptography:
+- **Chain key signatures**: Threshold ECDSA and Schnorr
+- **Canister signatures**: Canisters can sign transactions
+- **Key derivation**: Derive keys for specific canisters
+- **Protocol**: Gennaro-Goldfeder-Narayanan (GG20)
+
+### 6. VetKD (Verifiable Encrypted Threshold Key Derivation)
+
+Derives encrypted keys verifiable by third parties:
+- Generate canister-specific encryption keys
+- Verifiable by external entities
+- Supports multiple curves (BLS12-381, secp256k1)
+
+## Signature Schemes
+
+### BLS12-381
+
+Primary curve for threshold signatures:
+
+**Location**: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/`
+
+**Properties**:
+- Pairing-friendly elliptic curve
+- Efficient signature aggregation
+- Short signatures (48 bytes)
+- Supports threshold signatures natively
+
+**APIs**:
+```rust
+// Generate threshold key
+pub fn generate_threshold_key(
+    seed: Seed,
+    threshold: NumberOfNodes,
+    receivers: NumberOfNodes,
+) -> CryptoResult<(PublicCoefficientsBytes, Vec<SecretKeyBytes>)>
+
+// Sign message with individual key
+pub fn sign_message(
+    message: &[u8],
+    secret_key: &SecretKeyBytes,
+) -> Result<IndividualSignatureBytes, ClibThresholdSignError>
+
+// Combine individual signatures
+pub fn combine_signatures(
+    signatures: &[Option<IndividualSignatureBytes>],
+    threshold: NumberOfNodes,
+) -> Result<CombinedSignatureBytes, ClibThresholdSignError>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:76-87, 133-139`
+
+### Ed25519
+
+Basic signature scheme:
+- **Use**: Node signing keys
+- **Performance**: Very fast
+- **Key size**: 32 bytes
+- **Signature size**: 64 bytes
+
+### ECDSA (secp256k1, secp256r1)
+
+Chain key signatures:
+- Bitcoin compatibility (secp256k1)
+- Ethereum compatibility (secp256k1)
+- General purpose (secp256r1)
+- Threshold protocol via IDKG
+
+### Schnorr (Ed25519, BIP340)
+
+Threshold Schnorr signatures:
+- Ed25519 curve support
+- Bitcoin Taproot (BIP340) support
+- Efficient threshold signing
+
+## Key Generation
+
+The crypto component supports multiple key generation methods:
+
+### Node Key Generation
+
+Generated once during node setup:
+- **Node signing key**: Ed25519 for node identity
+- **Committee signing key**: For consensus participation
+- **DKG encryption key**: For receiving DKG dealings
+- **TLS certificate**: For inter-node communication
+
+### Threshold Key Generation
+
+Generated through DKG protocols:
+- **NI-DKG**: For subnet threshold signatures
+- **IDKG**: For chain key signatures
+- **Resharing**: Key rotation without changing public key
+
+## Hash Functions
+
+**Location**: `rs/crypto/sha2/`
+
+### Supported Algorithms
+
+- **SHA-256**: General purpose hashing
+- **SHA-224**: Truncated SHA-256
+- **SHA-512**: Extended security
+
+All hashing is WebAssembly compatible.
+
+## Tree Hashing
+
+**Location**: `rs/crypto/tree_hash/`
+
+Merkle tree construction and witness generation:
+- **Use case**: State certification
+- **Witness**: Proof that value exists in tree
+- **Verification**: Check witness against root hash
+- **WebAssembly**: Can verify in browser
+
+## TLS Integration
+
+**Location**: `rs/crypto/tls_interfaces/`
+
+Secure node-to-node communication:
+- **Handshake**: Establish encrypted channel
+- **Authentication**: Verify node identity
+- **Certificate validation**: Check against registry
+- **Cipher suites**: Modern, secure algorithms only
+
+## Registry Integration
+
+Crypto component relies on the registry for:
+
+### Public Key Distribution
+
+```rust
+fn key_from_registry(
+    registry: &dyn RegistryClient,
+    node_id: NodeId,
+    key_purpose: KeyPurpose,
+    registry_version: RegistryVersion,
+) -> CryptoResult<PublicKeyProto>
+```
+
+*Reference*: `rs/crypto/src/lib.rs:240-257`
+
+### Key Purposes
+
+- `NodeSigning`: Node identity key
+- `CommitteeSigning`: Consensus participation
+- `DkgEncryption`: Receiving DKG dealings
+- `TlsCertificate`: Network communication
+
+## Internal Structure
+
+**Location**: `rs/crypto/internal/`
+
+Internal implementation crates (not for external use):
+
+### crypto_lib
+
+Core cryptographic algorithms:
+- Threshold signatures (BLS12-381)
+- Canister threshold signatures (ECDSA, Schnorr)
+- Low-level primitives
+
+### csp (Crypto Service Provider)
+
+Abstraction over crypto operations:
+- Vault communication
+- Algorithm selection
+- Error handling
+
+### logmon
+
+Security monitoring:
+- Detects suspicious operations
+- Logs cryptographic events
+- Metrics collection
+
+## Security Considerations
+
+### Secret Key Protection
+
+1. **Vault isolation**: Secrets never leave vault process
+2. **Limited operations**: Only signing, no export
+3. **Audit logging**: All operations logged
+4. **Metrics**: Monitor usage patterns
+
+### Side-Channel Resistance
+
+- Constant-time operations where possible
+- Blinding techniques for sensitive operations
+- Careful memory management
+
+### Random Number Generation
+
+**Location**: `rs/crypto/prng/`
+
+- **CSPRNG**: Cryptographically secure pseudorandom number generator
+- **Seeding**: From OS entropy sources
+- **Forward security**: Old outputs don't compromise future ones
+
+## Performance
+
+Benchmarks available in:
+- `rs/crypto/benches/basic_sig.rs` - Basic signatures
+- `rs/crypto/benches/threshold_sig.rs` - Threshold signatures
+- `rs/crypto/benches/ni_dkg.rs` - NI-DKG operations
+- `rs/crypto/benches/idkg.rs` - IDKG operations
+
+## Testing
+
+### Test Utilities
+
+**Location**: `rs/crypto/test_utils/`
+
+Extensive test infrastructure:
+- Mock crypto components
+- Test key generation
+- Dummy implementations for unit tests
+- Integration test helpers
+
+### Standalone Verification
+
+**Location**: `rs/crypto/standalone-sig-verifier/`
+
+Lightweight verifier for external use:
+- No secret key operations
+- Verification only
+- Minimal dependencies
+
+## WebAssembly Support
+
+Several crypto crates support WebAssembly:
+- `ic-crypto-sha` - Hashing
+- `ic-crypto-tree-hash` - Merkle trees
+- `ic-crypto-node-key-validation` - Key validation
+- `ic-crypto-utils-basic-sig` - Basic signatures
+- `ic-crypto-utils-threshold-sig` - Threshold signatures
+
+## Related Components
+
+- [Consensus Layer](/architecture/consensus-layer) - Uses crypto for signatures
+- [Threshold Signatures](/architecture/threshold-signatures) - Distributed signing protocol
+- [DKG](/architecture/dkg) - Key distribution mechanism
+
+## Further Reading
+
+- [Internet Computer Cryptography Research Papers](https://internetcomputer.org/docs/current/references/)
+- [Threshold Cryptography Explainer](https://medium.com/dfinity/threshold-cryptography-on-the-internet-computer-9db24075ef0d)

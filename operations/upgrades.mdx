@@ -1,0 +1,780 @@
+---
+title: Node Upgrades
+description: Complete guide to Internet Computer node upgrade procedures, including replica version upgrades, HostOS upgrades, and verification
+---
+
+## Overview
+
+Internet Computer nodes require periodic upgrades to maintain security, add features, and improve performance. The IC platform supports multiple types of upgrades, each with automated coordination through the Network Nervous System (NNS).
+
+## Upgrade Types
+
+The IC node stack consists of multiple components, each with independent upgrade paths:
+
+```
+┌─────────────────────────────────────┐
+│         Replica Version             │  ← Managed by Orchestrator
+│  (Protocol, Consensus, Execution)   │     Coordinated via NNS
+└─────────────────────────────────────┘
+              ↓ runs on
+┌─────────────────────────────────────┐
+│           GuestOS                   │  ← Image-based upgrade
+│  (Virtual Machine OS Layer)         │     Rare, coordinated
+└─────────────────────────────────────┘
+              ↓ runs on
+┌─────────────────────────────────────┐
+│           HostOS                    │  ← Managed by Orchestrator
+│  (Physical Host OS Layer)           │     Automatic, with reboot
+└─────────────────────────────────────┘
+```
+
+### Replica Version Upgrades
+
+**Frequency**: Regular (monthly or as needed)
+**Downtime**: None (coordinated subnet upgrade)
+**Automation**: Fully automatic via Orchestrator
+
+Replica upgrades update the IC protocol implementation, including:
+- Consensus improvements
+- Execution layer enhancements
+- Networking updates
+- Bug fixes and security patches
+
+### HostOS Upgrades
+
+**Frequency**: Periodic (as needed for OS security/features)
+**Downtime**: Brief (node reboot ~1-5 minutes)
+**Automation**: Fully automatic via Orchestrator
+
+HostOS upgrades update the physical host operating system:
+- Kernel updates
+- System library updates
+- VM infrastructure improvements
+- Security patches
+
+### GuestOS Upgrades
+
+**Frequency**: Rare (major system changes)
+**Downtime**: Brief (VM restart)
+**Automation**: Coordinated via NNS proposals
+
+GuestOS upgrades update the virtual machine operating system.
+
+## Replica Version Upgrade Process
+
+Replica upgrades are the most common and are fully automated.
+
+### Architecture
+
+The Orchestrator continuously monitors the registry for version updates and coordinates upgrades:
+
+```rust
+// From rs/orchestrator/src/upgrade.rs
+
+// Control flow decisions
+pub(crate) enum OrchestratorControlFlow {
+    Assigned(SubnetId),     // Node is assigned to subnet
+    Leaving(SubnetId),      // Node is leaving subnet
+    Unassigned,             // Node is unassigned
+    Stop,                   // Stop orchestrator
+}
+
+// Upgrade process components
+pub struct ReplicaProcess {
+    version: ReplicaVersion,
+    binary: String,
+    args: Vec<String>,
+}
+```
+
+### Upgrade Flow
+
+<Steps>
+  <Step title="NNS Proposal and Approval">
+    A replica version upgrade begins with NNS governance:
+    
+    1. Proposal submitted to NNS
+    2. Community voting period
+    3. Proposal execution updates registry
+    4. New version becomes blessed for subnet
+  </Step>
+
+  <Step title="Orchestrator Detection">
+    The Orchestrator detects the version mismatch:
+    
+    ```rust
+    // From rs/orchestrator/src/upgrade.rs
+    // Orchestrator checks registry at regular intervals
+    // Compares current version with target version from registry
+    
+    if current_version != target_version {
+        // Begin upgrade process
+        start_upgrade_process();
+    }
+    ```
+    
+    <Info>
+    The Orchestrator checks for upgrades every 10 seconds (configurable). Version mismatches trigger the upgrade flow.
+    </Info>
+  </Step>
+
+  <Step title="Artifact Download">
+    The Orchestrator downloads the new replica version:
+    
+    ```rust
+    // From rs/orchestrator/src/upgrade.rs:140-145
+    fn get_replica_version_record(
+        &self,
+        replica_version_id: ReplicaVersion,
+        version: RegistryVersion,
+    ) -> OrchestratorResult<ReplicaVersionRecord>
+    ```
+    
+    The replica version record contains:
+    - Download URLs for binaries
+    - Cryptographic hash for verification
+    - Release metadata
+    
+    **Download and Verification:**
+    ```rust
+    // FileDownloader verifies:
+    // 1. Downloads from provided URLs
+    // 2. Computes SHA256 hash
+    // 3. Compares against registry hash
+    // 4. Rejects if mismatch
+    ```
+  </Step>
+
+  <Step title="Catch-Up Package (CUP) Coordination">
+    The upgrade uses a Catch-Up Package for safe state transition:
+    
+    ```rust
+    // From rs/orchestrator/src/catch_up_package_provider.rs
+    // CUP provides:
+    // - Consensus state at specific height
+    // - Cryptographic proof of subnet agreement
+    // - Starting point for new replica version
+    ```
+    
+    <Note>
+    The CUP mechanism ensures all subnet nodes upgrade to a consistent state, preventing forks or inconsistencies.
+    </Note>
+    
+    **CUP Validation:**
+    ```rust
+    // Orchestrator validates CUP:
+    // - Deserializes CUP from local storage
+    // - Verifies cryptographic signatures
+    // - Confirms subnet membership
+    // - Uses for replica initialization
+    ```
+    
+    <Warning>
+    CUP deserialization failures are critical errors tracked by `orchestrator_cup_deserialization_failed_total`. These indicate potential data corruption.
+    </Warning>
+  </Step>
+
+  <Step title="Process Management">
+    The Orchestrator manages the replica process lifecycle:
+    
+    ```rust
+    // From rs/orchestrator/src/process_manager.rs
+    pub trait Process {
+        const NAME: &'static str;
+        type Version;
+        
+        fn get_version(&self) -> &Self::Version;
+        fn get_binary(&self) -> &str;
+        fn get_args(&self) -> &[String];
+        fn get_env(&self) -> HashMap<String, String>;
+    }
+    ```
+    
+    **Process Upgrade Steps:**
+    1. Gracefully stop old replica process
+    2. Prepare new binary and arguments
+    3. Start new replica version
+    4. Monitor for successful startup
+    5. Update metrics: `orchestrator_replica_process_start_attempts_total`
+  </Step>
+
+  <Step title="Verification">
+    The Orchestrator verifies successful upgrade:
+    
+    - Process is running
+    - Metrics endpoint responsive
+    - Registry version matches expected
+    - No critical errors in logs
+  </Step>
+</Steps>
+
+### Upgrade Prevention
+
+The Orchestrator can prevent upgrades in certain conditions:
+
+```rust
+// From rs/orchestrator/src/metrics.rs:17-18
+replica_version_upgrade_prevented: IntCounterVec,
+  // Tracks: version, reason
+```
+
+**Common Prevention Reasons:**
+
+- **Recalled Version**: Version flagged as problematic
+- **Registry Unavailable**: Cannot verify target version
+- **Download Failure**: Cannot obtain upgrade artifacts
+- **Verification Failure**: Cryptographic hash mismatch
+- **CUP Unavailable**: Cannot obtain valid Catch-Up Package
+
+<Info>
+Monitor the `orchestrator_replica_version_upgrade_prevented_total` metric to identify upgrade issues early.
+</Info>
+
+## HostOS Upgrade Process
+
+HostOS upgrades update the physical host operating system with minimal downtime.
+
+### Architecture
+
+```rust
+// From rs/orchestrator/src/hostos_upgrade.rs
+
+pub(crate) struct HostosUpgrader {
+    registry: Arc<RegistryHelper>,
+    hostos_version: HostosVersion,
+    node_id: NodeId,
+    logger: ReplicaLogger,
+}
+```
+
+### Upgrade Loop
+
+```rust
+// From rs/orchestrator/src/hostos_upgrade.rs:40-64
+pub async fn upgrade_loop(
+    &mut self,
+    cancellation_token: CancellationToken,
+    mut backoff: ExponentialBackoff,
+    liveness_timeout: Duration,
+) {
+    loop {
+        match tokio::time::timeout(liveness_timeout, self.check_for_upgrade()).await {
+            Ok(Ok(())) => backoff.reset(),
+            e => warn!(&self.logger, "Check for HostOS upgrade failed: {:?}", e),
+        }
+        
+        let safe_backoff = backoff.next_backoff().unwrap_or(backoff.max_interval);
+        tokio::select! {
+            _ = tokio::time::sleep(safe_backoff) => {}
+            _ = cancellation_token.cancelled() => break
+        };
+    }
+}
+```
+
+<Info>
+The HostOS upgrader runs continuously, checking the registry for new versions at regular intervals with exponential backoff.
+</Info>
+
+### HostOS Upgrade Flow
+
+<Steps>
+  <Step title="Version Detection">
+    The Orchestrator compares current and target HostOS versions:
+    
+    ```rust
+    // From rs/orchestrator/src/hostos_upgrade.rs:66-92
+    async fn check_for_upgrade(&mut self) -> OrchestratorResult<()> {
+        let latest_registry_version = self.registry.get_latest_version();
+        let node_id = self.node_id;
+        
+        let node_hostos_version = self
+            .registry
+            .get_node_hostos_version(latest_registry_version)?;
+        
+        if let Some(node_hostos_version) = node_hostos_version
+            && self.hostos_version != node_hostos_version
+        {
+            info!(
+                self.logger,
+                "Starting HostOS upgrade at registry version {}: {} -> {}",
+                latest_registry_version,
+                self.hostos_version,
+                node_hostos_version
+            );
+            return self.execute_upgrade(&node_hostos_version).await;
+        }
+        
+        Ok(())
+    }
+    ```
+  </Step>
+
+  <Step title="Retrieve Upgrade Package">
+    The Orchestrator fetches the HostOS upgrade package:
+    
+    ```rust
+    // From rs/orchestrator/src/hostos_upgrade.rs:95-104
+    let HostosVersionRecord {
+        mut release_package_urls,
+        release_package_sha256_hex: hash,
+        ..
+    } = hostos_version_record;
+    
+    // Load balancing: rotate URLs by node-specific offset
+    let url_count = release_package_urls.len();
+    release_package_urls.rotate_right(self.get_load_balance_number() % url_count);
+    ```
+    
+    <Note>
+    URL rotation distributes download load across mirrors. Each node uses a deterministic offset based on its node ID.
+    </Note>
+  </Step>
+
+  <Step title="Download and Verify">
+    Downloads the upgrade package with hash verification:
+    
+    ```rust
+    // From rs/orchestrator/src/hostos_upgrade.rs:112-125
+    for release_package_url in release_package_urls.iter() {
+        if let Err(e) = UtilityCommand::request_hostos_upgrade(
+            release_package_url, 
+            &hash
+        ).await {
+            info!(
+                &self.logger,
+                "HostOS upgrade failed using: '{release_package_url}'"
+            );
+            error = e;
+        }
+    }
+    ```
+    
+    The upgrade package contains:
+    - New HostOS boot image
+    - New HostOS root filesystem image
+    - Upgrade installation scripts
+  </Step>
+
+  <Step title="Install Upgrade">
+    The HostOS upgrade is installed:
+    
+    ```bash
+    # From ic-os/components/upgrade/install-upgrade.sh
+    
+    tar -xaf "$1" -C "${TMPDIR}"
+    /opt/ic/bin/manageboot.sh hostos upgrade-install \
+        "${TMPDIR}"/boot.img \
+        "${TMPDIR}"/root.img
+    /opt/ic/bin/manageboot.sh hostos upgrade-commit
+    ```
+    
+    <Note>
+    The upgrade is installed to alternate boot partition. The system will boot the new version on next reboot.
+    </Note>
+  </Step>
+
+  <Step title="Reboot">
+    The system reboots to activate the new HostOS:
+    
+    - HostOS shuts down GuestOS VM
+    - System reboots into new HostOS version
+    - HostOS starts services
+    - GuestOS VM is restarted
+    - Replica resumes operation
+    
+    <Info>
+    Total downtime is typically 1-5 minutes. The subnet continues operating with remaining nodes during the reboot.
+    </Info>
+  </Step>
+
+  <Step title="Post-Reboot Verification">
+    After reboot, verify:
+    
+    ```bash
+    # Check HostOS version
+    cat /etc/hostos_version
+    
+    # Verify GuestOS VM is running
+    virsh list
+    
+    # Check Orchestrator is operational
+    systemctl status ic-orchestrator
+    
+    # Verify metrics
+    curl http://localhost:9091/metrics | grep ic_orchestrator_info
+    ```
+  </Step>
+</Steps>
+
+### Reboot Duration Tracking
+
+```rust
+// From rs/orchestrator/src/metrics.rs:12
+reboot_duration: IntGauge,
+  // "The time it took for the node to reboot"
+```
+
+Monitor `reboot_duration_seconds` to track HostOS upgrade impact.
+
+## Verifying Releases
+
+The Internet Computer provides tools to verify build reproducibility of IC-OS update images.
+
+### Prerequisites
+
+- Ubuntu 22.04 or higher
+- Python 3.x
+- curl installed
+- ~100 GB free disk space
+
+### Verification Process
+
+<Steps>
+  <Step title="Identify Release">
+    Find the release to verify:
+    
+    ```bash
+    # View releases at:
+    https://dashboard.internetcomputer.org/releases
+    
+    # Note the proposal number or commit ID
+    ```
+  </Step>
+
+  <Step title="Run Verification Script">
+    Use the official reproducibility check:
+    
+    <Warning>
+    Always use versioned repro-check URLs (with commit ID) instead of `master` to ensure compatibility.
+    </Warning>
+    
+    **Verify by proposal number:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -p <proposal_number>
+    ```
+    
+    **Verify by git commit:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -c {COMMIT_ID}
+    ```
+  </Step>
+
+  <Step title="Component-Specific Verification">
+    Verify individual components:
+    
+    **GuestOS only:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -c {COMMIT_ID} --guestos
+    ```
+    
+    **HostOS only:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -c {COMMIT_ID} --hostos
+    ```
+    
+    **SetupOS only:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -c {COMMIT_ID} --setupos
+    ```
+  </Step>
+
+  <Step title="Verify Output">
+    The script will:
+    
+    1. Download release images
+    2. Rebuild from source
+    3. Compare cryptographic hashes
+    4. Report verification success/failure
+    
+    Successful verification confirms the image matches the published source code.
+  </Step>
+</Steps>
+
+### Release Information
+
+Each release includes:
+
+- **Commit ID**: Git commit of the release
+- **Version**: Semantic version number
+- **Binaries**: Downloadable artifacts
+- **Hashes**: SHA256 checksums for verification
+- **Proposal**: NNS proposal number (if applicable)
+
+## Monitoring Upgrades
+
+### Pre-Upgrade Monitoring
+
+**Track upgrade readiness:**
+
+```prometheus
+# No consecutive upgrade failures
+orchestrator_failed_consecutive_upgrade_checks_total == 0
+
+# Registry is up-to-date
+time() - firewall_registry_version < 3600
+
+# No critical errors
+rate(orchestrator_cup_deserialization_failed_total[1h]) == 0
+rate(orchestrator_state_removal_failed_total[1h]) == 0
+```
+
+### During Upgrade
+
+**Monitor upgrade progress:**
+
+```prometheus
+# Track upgrade prevention
+rate(orchestrator_replica_version_upgrade_prevented_total[15m]) by (version, reason)
+
+# Process restart attempts
+rate(orchestrator_replica_process_start_attempts_total[15m])
+
+# Current version
+ic_orchestrator_info{ic_active_version="<version>"}
+```
+
+### Post-Upgrade Verification
+
+**Verify successful upgrade:**
+
+```bash
+# Check replica version
+curl http://localhost:9091/metrics | grep ic_orchestrator_info
+
+# Verify no errors
+curl http://localhost:9091/metrics | grep orchestrator_cup_deserialization_failed_total
+
+# Check process is stable
+journalctl -u ic-replica -n 100 --no-pager
+```
+
+## Rollback Procedures
+
+### Replica Version Rollback
+
+Replica versions can be rolled back via NNS proposal:
+
+1. Submit NNS proposal to revert subnet replica version
+2. Proposal approved by governance
+3. Registry updated with previous version
+4. Orchestrator detects version change
+5. Automatic "upgrade" to previous version
+
+<Note>
+Rollbacks use the same mechanism as upgrades, ensuring safe state transitions via CUP.
+</Note>
+
+### HostOS Rollback
+
+HostOS uses dual-partition booting for rollback:
+
+```bash
+# From ic-os/components/upgrade/manageboot.sh
+# Boot management supports:
+# - Primary partition (current version)
+# - Alternate partition (previous or new version)
+# - Automatic failover on boot failure
+```
+
+**Manual rollback:**
+
+```bash
+# Boot to previous HostOS version
+/opt/ic/bin/manageboot.sh hostos rollback
+reboot
+```
+
+<Warning>
+Manual rollbacks should only be performed in emergency situations. Normal rollbacks should go through NNS governance.
+</Warning>
+
+## Troubleshooting Upgrades
+
+### Upgrade Stuck
+
+**Symptoms:**
+- `orchestrator_failed_consecutive_upgrade_checks_total` increasing
+- No version change after registry update
+
+**Diagnosis:**
+
+```bash
+# Check orchestrator logs
+journalctl -u ic-orchestrator -n 200 --no-pager
+
+# Look for:
+# - Download failures
+# - Hash verification errors
+# - CUP issues
+# - Registry connectivity problems
+```
+
+**Common causes:**
+- Network connectivity to download URLs
+- Registry replication lag
+- Invalid release package URLs
+- Hash mismatch (corrupted download)
+
+### CUP Deserialization Failures
+
+<Warning>
+CUP deserialization failures are critical. They indicate potential data corruption or incompatibility.
+</Warning>
+
+**Check metrics:**
+
+```prometheus
+orchestrator_cup_deserialization_failed_total > 0
+```
+
+**Investigation:**
+
+```bash
+# Check CUP file
+ls -lh /var/lib/ic/data/cup/
+
+# Review logs for deserialization errors
+journalctl -u ic-orchestrator | grep -i "cup.*failed"
+```
+
+**Resolution:**
+- May require manual intervention
+- Contact IC support with logs and metrics
+- Potential state recovery needed
+
+### HostOS Upgrade Failures
+
+**Symptoms:**
+- Node doesn't reboot after upgrade request
+- Reboots but stays on old version
+
+**Diagnosis:**
+
+```bash
+# Check current HostOS version
+cat /etc/hostos_version
+
+# Check boot configuration
+/opt/ic/bin/manageboot.sh hostos status
+
+# Review upgrade logs
+journalctl -b -1 | grep -i upgrade
+```
+
+**Common causes:**
+- Download failure (network issue)
+- Insufficient disk space
+- Bootloader configuration error
+- Installation script failure
+
+### Process Won't Start After Upgrade
+
+**Symptoms:**
+- `orchestrator_replica_process_start_attempts_total` increasing rapidly
+- Replica process crashes immediately
+
+**Diagnosis:**
+
+```bash
+# Check replica logs
+virsh console guestos
+journalctl -u ic-replica -n 100
+
+# Look for:
+# - Binary incompatibility
+# - Configuration errors
+# - Resource exhaustion
+# - State corruption
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Monitor Continuously">
+    Track all upgrade-related metrics:
+    - Version metrics
+    - Error counters
+    - Process restart attempts
+    - Registry synchronization
+  </Step>
+
+  <Step title="Verify Before Upgrade">
+    Ensure node health before upgrades:
+    - No critical errors
+    - Registry synchronized
+    - Adequate resources
+    - Network connectivity stable
+  </Step>
+
+  <Step title="Test in Development">
+    Test upgrades on development nodes before production:
+    ```bash
+    # Build and test dev images
+    bazel build //ic-os/guestos/envs/dev/...
+    ```
+  </Step>
+
+  <Step title="Plan for Downtime">
+    HostOS upgrades cause brief downtime:
+    - Schedule during low-activity periods if possible
+    - Ensure subnet has adequate redundancy
+    - Monitor reboot duration metrics
+  </Step>
+
+  <Step title="Document Incidents">
+    Record any upgrade issues:
+    - Error messages
+    - Metrics at time of issue
+    - Resolution steps
+    - Root cause analysis
+  </Step>
+</Steps>
+
+## Upgrade Automation
+
+<Info>
+IC node upgrades are designed to be fully automatic. Manual intervention should only be needed for exceptional circumstances.
+</Info>
+
+**Automatic behaviors:**
+
+- ✅ Replica version detection and upgrade
+- ✅ HostOS version detection and upgrade
+- ✅ Artifact download and verification
+- ✅ Process lifecycle management
+- ✅ CUP coordination
+- ✅ Rollback on boot failure
+
+**Manual intervention may be needed for:**
+
+- ❌ Subnet-wide coordination issues
+- ❌ CUP corruption recovery
+- ❌ Emergency rollbacks
+- ❌ Network connectivity problems
+- ❌ Data center infrastructure issues
+
+## Resources
+
+### Official Documentation
+
+- [IC Dashboard - Releases](https://dashboard.internetcomputer.org/releases)
+- [IC-OS Overview](/ic-os/overview)
+- [Verification Guide](https://github.com/dfinity/ic#verifying-releases)
+
+### Related Guides
+
+- [Node Setup](/operations/node-setup)
+- [Monitoring Guide](/operations/monitoring)
+- [Node Provider Guide](/operations/node-provider-guide)
+
+### Community Resources
+
+- [Developer Forum](https://forum.dfinity.org/)
+- [NNS Proposals](https://github.com/dfinity/nns-proposals)
+- [IC Wiki](https://wiki.internetcomputer.org/)

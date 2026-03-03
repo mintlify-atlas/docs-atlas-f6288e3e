@@ -1,0 +1,793 @@
+---
+title: Node Monitoring
+description: Comprehensive guide to monitoring Internet Computer nodes including metrics, alerting, and observability
+---
+
+## Overview
+
+Effective monitoring is critical for operating healthy Internet Computer nodes. The IC platform exposes comprehensive metrics through Prometheus-compatible endpoints, providing visibility into node health, performance, and network participation.
+
+## Metrics Architecture
+
+The IC node exposes multiple metrics endpoints:
+
+```
+┌─────────────────────────────────────────────┐
+│                  GuestOS VM                  │
+│                                             │
+│  ┌─────────────┐         ┌──────────────┐  │
+│  │ IC Replica  │:9090    │ Custom       │  │
+│  │ Metrics     │────────▶│ Metrics      │  │
+│  └─────────────┘         └──────────────┘  │
+│                                             │
+│  ┌─────────────────────────────────────┐  │
+│  │ Orchestrator :9091                  │  │
+│  └─────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+                    │
+                    │ metrics-proxy
+                    ▼
+┌─────────────────────────────────────────────┐
+│                   HostOS                     │
+│                                             │
+│  ┌─────────────────────────────────────┐  │
+│  │ Node Exporter :9100                 │  │
+│  └─────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+```
+
+## Metrics Endpoints
+
+### Replica Metrics (Port 9090)
+
+The IC replica exposes comprehensive metrics about protocol operations:
+
+**Endpoint Configuration** (from `rs/http_endpoints/metrics/src/lib.rs:126-146`):
+
+```rust
+// Default metrics address: [::]:9090
+// Configuration:
+let mut addr = "[::]:9090".parse::<SocketAddr>().unwrap();
+addr.set_port(address.port());
+
+// Service configuration:
+.timeout(Duration::from_secs(config.request_timeout_seconds))
+.layer(GlobalConcurrencyLimitLayer::new(
+    config.max_concurrent_requests,
+))
+```
+
+**Access the endpoint:**
+
+```bash
+curl http://[::1]:9090/metrics
+# Or IPv4:
+curl http://localhost:9090/metrics
+```
+
+<Info>
+Metrics scraping has built-in timeout handling. The default timeout is configurable via `request_timeout_seconds`, and Prometheus scrape timeout is respected via the `X-Prometheus-Scrape-Timeout-Seconds` header.
+</Info>
+
+**Metric Collection:**
+
+```rust
+// From rs/http_endpoints/metrics/src/lib.rs:90-108
+// Replica metrics are served even if adapters are unresponsive
+// Each adapter enforces default timeout (1s) or fraction of Prometheus timeout
+const DEFAULT_ADAPTER_COLLECTION_TIMEOUT: Duration = Duration::from_secs(1);
+const PROMETHEUS_TIMEOUT_FRACTION: f64 = 0.5;
+```
+
+### Orchestrator Metrics (Port 9091)
+
+The Orchestrator exposes node management and operational metrics.
+
+**Key Metrics** (from `rs/orchestrator/src/metrics.rs`):
+
+```prometheus
+# Registry synchronization
+ssh_access_registry_version
+  # Registry version last used to update SSH public keys
+  
+firewall_registry_version
+  # Latest registry version used for firewall configuration
+  
+ipv4_registry_version
+  # Latest registry version used for IPv4 configuration
+
+# System operations
+reboot_duration_seconds
+  # Time taken for the node to reboot
+  
+orchestrator_fstrim_duration_milliseconds
+  # Duration of the last fstrim call
+
+# Version information
+ic_orchestrator_info{ic_active_version="<version>"}
+  # Version info for the orchestrator
+
+# Key rotation status
+orchestrator_key_rotation_status{status="<state>"}
+  # Current key rotation status
+  # States: Disabled, TooRecent, Rotating, Registering, Registered, Error
+
+# Critical errors
+orchestrator_master_public_key_changed_errors_total{key_id="<key>"}
+  # Counter monitoring changed threshold master public keys
+  
+orchestrator_cup_deserialization_failed_total
+  # Number of times CUP deserialization failed
+  
+orchestrator_state_removal_failed_total
+  # Number of times removing local node state failed
+  
+orchestrator_tasks_failed_total{task_name="<task>",reason="<reason>"}
+  # Task failure counter with details
+
+# Upgrade tracking
+orchestrator_failed_consecutive_upgrade_checks_total
+  # Consecutive upgrade check failures
+  
+orchestrator_replica_version_upgrade_prevented_total{version="<ver>",reason="<reason>"}
+  # Upgrades prevented, with version and reason
+  
+orchestrator_replica_process_start_attempts_total
+  # Replica process start attempts
+```
+
+**Metric Implementation** (from `rs/orchestrator/src/metrics.rs:49-114`):
+
+```rust
+impl OrchestratorMetrics {
+    pub fn new(metrics_registry: &ic_metrics::MetricsRegistry) -> Self {
+        Self {
+            ssh_access_registry_version: metrics_registry.int_gauge(
+                "ssh_access_registry_version",
+                "Registry version last used to update the SSH public keys",
+            ),
+            // ... additional metrics registered
+        }
+    }
+}
+```
+
+**Key Rotation Monitoring:**
+
+```rust
+// From rs/orchestrator/src/metrics.rs:119-135
+pub fn observe_key_rotation_status(&self, status: KeyRotationStatus) {
+    // Set current status and clear all other states
+    // Don't clear error status when in transient states
+    KeyRotationStatus::iter()
+        .filter(|s| !status.is_transient() || !s.is_error())
+        .for_each(|s| {
+            self.key_rotation_status
+                .with_label_values(&[s.as_ref()])
+                .set((s == status) as i64);
+        });
+}
+```
+
+### Node Exporter Metrics (Port 9100)
+
+Standard system metrics via Prometheus Node Exporter.
+
+**Service Configuration** (from `ic-os/components/monitoring/node_exporter/node_exporter.service`):
+
+```ini
+[Unit]
+Description=Node Exporter
+After=network.target
+Wants=setup-node_exporter-keys.service
+
+[Service]
+User=node_exporter
+Group=node_exporter
+EnvironmentFile=/etc/default/node_exporter
+ExecStart=/usr/local/bin/node_exporter $OPTIONS
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+```
+
+**Standard Metrics:**
+
+```prometheus
+# CPU
+node_cpu_seconds_total{cpu,mode}
+node_load1
+node_load5
+node_load15
+
+# Memory
+node_memory_MemTotal_bytes
+node_memory_MemAvailable_bytes
+node_memory_MemFree_bytes
+node_memory_Buffers_bytes
+node_memory_Cached_bytes
+node_memory_SwapTotal_bytes
+node_memory_SwapFree_bytes
+
+# Disk
+node_disk_read_bytes_total{device}
+node_disk_written_bytes_total{device}
+node_disk_io_time_seconds_total{device}
+node_filesystem_avail_bytes{device,fstype,mountpoint}
+node_filesystem_size_bytes{device,fstype,mountpoint}
+
+# Network
+node_network_receive_bytes_total{device}
+node_network_transmit_bytes_total{device}
+node_network_receive_errs_total{device}
+node_network_transmit_errs_total{device}
+
+# System
+node_boot_time_seconds
+node_time_seconds
+node_uname_info{release,version}
+```
+
+### Custom GuestOS Metrics
+
+IC-specific metrics from GuestOS environment.
+
+**Metric Generation** (from `ic-os/components/monitoring/guestos/custom-metrics.sh`):
+
+```bash
+#!/bin/bash
+source /opt/ic/bin/logging.sh
+source /opt/ic/bin/metrics.sh
+source /opt/ic/bin/config.sh
+
+# Version tracking
+GUESTOS_VERSION_FILE="/opt/ic/share/version.txt"
+if [ -r ${GUESTOS_VERSION_FILE} ]; then
+    GUESTOS_VERSION=$(cat ${GUESTOS_VERSION_FILE})
+    GUESTOS_VERSION_OK=1
+else
+    GUESTOS_VERSION="unknown"
+    GUESTOS_VERSION_OK=0
+fi
+
+write_metric_attr "guestos_version" \
+    "{version=\"${GUESTOS_VERSION}\"}" \
+    "${GUESTOS_VERSION_OK}" \
+    "GuestOS version string" \
+    "gauge"
+```
+
+**Custom Metrics:**
+
+```prometheus
+# GuestOS version
+guestos_version{version="<version>"}
+  # Current GuestOS version (1=readable, 0=unknown)
+
+# Boot status
+guestos_boot_action{successful_boot="true"}
+  # GuestOS boot status
+
+# Configuration
+guestos_config_version{version="<version>"}
+  # GuestOS configuration version
+
+# TEE (Trusted Execution Environment)
+guestos_tee_configured
+  # Whether VM is configured for TEE (1=yes, 0=no)
+  
+guestos_tee_active
+  # Whether VM is running in TEE (1=yes, 0=no)
+```
+
+**TEE Metrics Implementation:**
+
+```bash
+# From custom-metrics.sh:49-76
+function update_tee_metrics() {
+    local metric_family="guestos_tee"
+    clear_metrics "$metric_family"
+    
+    tee_configuration_str=$(get_config_value '.icos_settings.enable_trusted_execution_environment')
+    
+    if [[ "${tee_configuration_str}" == "true" ]]; then
+        tee_configured=1
+    else
+        tee_configured=0
+    fi
+    
+    write_metric_header "$metric_family" \
+        "guestos_tee_configured" \
+        "Indicates whether VM is configured to run in TEE" \
+        "gauge"
+    append_metric "$metric_family" "guestos_tee_configured" "" "${tee_configured}"
+    
+    write_metric_header "$metric_family" \
+        "guestos_tee_active" \
+        "Indicates whether VM is running in TEE" \
+        "gauge"
+    append_metric "$metric_family" "guestos_tee_active" "" "$SEV_ACTIVE"
+}
+```
+
+## Metrics Collection with Prometheus
+
+### Prometheus Configuration
+
+Configure Prometheus to scrape IC node metrics:
+
+```yaml
+# prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Replica metrics
+  - job_name: 'ic-replica'
+    static_configs:
+      - targets: ['node1.example.com:9090', 'node2.example.com:9090']
+        labels:
+          cluster: 'ic-production'
+          
+  # Orchestrator metrics
+  - job_name: 'ic-orchestrator'
+    static_configs:
+      - targets: ['node1.example.com:9091', 'node2.example.com:9091']
+        labels:
+          cluster: 'ic-production'
+          
+  # Node exporter metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node1.example.com:9100', 'node2.example.com:9100']
+        labels:
+          cluster: 'ic-production'
+```
+
+### Service Discovery
+
+For dynamic node discovery, use Prometheus service discovery:
+
+```yaml
+# Using file-based service discovery
+scrape_configs:
+  - job_name: 'ic-nodes'
+    file_sd_configs:
+      - files:
+        - '/etc/prometheus/targets/ic-nodes-*.json'
+        refresh_interval: 60s
+```
+
+**Target file format:**
+
+```json
+[
+  {
+    "targets": ["node1.example.com:9090"],
+    "labels": {
+      "job": "ic-replica",
+      "environment": "production",
+      "node_id": "<node_id>"
+    }
+  }
+]
+```
+
+## Key Metrics to Monitor
+
+### Critical Metrics
+
+<Warning>
+Alert on any increase in these critical error metrics. They indicate serious issues requiring immediate investigation.
+</Warning>
+
+```prometheus
+# Critical errors - alert on any increase
+rate(orchestrator_cup_deserialization_failed_total[5m]) > 0
+rate(orchestrator_state_removal_failed_total[5m]) > 0
+rate(orchestrator_master_public_key_changed_errors_total[5m]) > 0
+rate(orchestrator_tasks_failed_total[5m]) > 0
+```
+
+### Health Metrics
+
+```prometheus
+# Node is up and scraping
+up{job="ic-replica"} == 1
+up{job="ic-orchestrator"} == 1
+up{job="node-exporter"} == 1
+
+# Registry synchronization is current
+time() - ssh_access_registry_version < 3600
+time() - firewall_registry_version < 3600
+time() - ipv4_registry_version < 3600
+
+# Key rotation is healthy
+orchestrator_key_rotation_status{status="Error"} == 0
+orchestrator_key_rotation_status{status="Registered"} == 1
+
+# No consecutive upgrade failures
+rate(orchestrator_failed_consecutive_upgrade_checks_total[15m]) == 0
+```
+
+### Performance Metrics
+
+```prometheus
+# CPU utilization
+100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+
+# Memory usage
+(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100
+
+# Disk I/O wait
+rate(node_cpu_seconds_total{mode="iowait"}[5m]) * 100
+
+# Disk space usage
+(1 - (node_filesystem_avail_bytes / node_filesystem_size_bytes)) * 100
+
+# Network throughput
+rate(node_network_receive_bytes_total[5m])
+rate(node_network_transmit_bytes_total[5m])
+```
+
+### Upgrade Metrics
+
+```prometheus
+# Track upgrade prevention
+orchestrator_replica_version_upgrade_prevented_total{version,reason}
+
+# Monitor process restarts
+rate(orchestrator_replica_process_start_attempts_total[15m])
+
+# Reboot duration
+orchestrator_fstrim_duration_milliseconds
+reboot_duration_seconds
+```
+
+## Alerting Rules
+
+### Prometheus Alerting Configuration
+
+```yaml
+# /etc/prometheus/rules/ic-alerts.yml
+groups:
+  - name: ic_critical
+    interval: 30s
+    rules:
+      # Node offline
+      - alert: ICNodeDown
+        expr: up{job=~"ic-.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IC Node {{ $labels.instance }} is down"
+          description: "Node has been unreachable for 5 minutes"
+
+      # Critical errors
+      - alert: ICCriticalError
+        expr: rate(orchestrator_cup_deserialization_failed_total[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical CUP deserialization error on {{ $labels.instance }}"
+          description: "Investigate immediately - check orchestrator logs"
+
+      # Key rotation failure
+      - alert: ICKeyRotationError
+        expr: orchestrator_key_rotation_status{status="Error"} == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Key rotation error on {{ $labels.instance }}"
+          description: "Check key rotation logs and registry connectivity"
+
+  - name: ic_warnings
+    interval: 60s
+    rules:
+      # High CPU
+      - alert: ICHighCPU
+        expr: (100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value }}%"
+
+      # High memory
+      - alert: ICHighMemory
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value }}%"
+
+      # Disk space
+      - alert: ICLowDiskSpace
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/var/lib/ic"} / node_filesystem_size_bytes{mountpoint="/var/lib/ic"})) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk usage is {{ $value }}%"
+
+      # Registry sync lag
+      - alert: ICRegistryOutdated
+        expr: time() - firewall_registry_version > 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Registry synchronization lag on {{ $labels.instance }}"
+          description: "Registry hasn't updated in {{ $value }} seconds"
+
+      # Upgrade issues
+      - alert: ICUpgradeCheckFailures
+        expr: rate(orchestrator_failed_consecutive_upgrade_checks_total[15m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consecutive upgrade check failures on {{ $labels.instance }}"
+          description: "Upgrade checks are failing - check network and registry"
+```
+
+### Alert Notification
+
+Configure Alertmanager for notifications:
+
+```yaml
+# alertmanager.yml
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'cluster']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  receiver: 'ic-ops-team'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'ic-ops-oncall'
+      continue: true
+
+receivers:
+  - name: 'ic-ops-team'
+    slack_configs:
+      - api_url: '<webhook_url>'
+        channel: '#ic-node-alerts'
+        title: '{{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+
+  - name: 'ic-ops-oncall'
+    pagerduty_configs:
+      - service_key: '<pagerduty_key>'
+        description: '{{ .GroupLabels.alertname }}'
+```
+
+## Logging
+
+### System Logs
+
+IC nodes use systemd journald for logging:
+
+```bash
+# Orchestrator logs
+journalctl -u ic-orchestrator -f
+
+# Replica logs (from within GuestOS)
+journalctl -u ic-replica -f
+
+# Registry replicator
+journalctl -u ic-registry-replicator -f
+
+# Node exporter
+journalctl -u node_exporter -f
+```
+
+**Journald Configuration** (from `ic-os/components/monitoring/journald.conf`):
+
+```ini
+[Journal]
+Storage=persistent
+Compress=yes
+Seal=yes
+SplitMode=uid
+SyncIntervalSec=5m
+RateLimitIntervalSec=30s
+RateLimitBurst=10000
+SystemMaxUse=1G
+SystemKeepFree=2G
+SystemMaxFileSize=100M
+MaxRetentionSec=7day
+MaxFileSec=1day
+ForwardToSyslog=no
+ForwardToKMsg=no
+ForwardToConsole=no
+ForwardToWall=yes
+MaxLevelStore=debug
+MaxLevelSyslog=debug
+```
+
+### Log Aggregation
+
+For centralized logging, export logs to a log aggregation system:
+
+```bash
+# Using journald remote logging
+# Configure in /etc/systemd/journal-upload.conf
+[Upload]
+URL=https://log-collector.example.com:19532
+ServerKeyFile=/etc/ssl/private/journal-upload.key
+ServerCertificateFile=/etc/ssl/certs/journal-upload.crt
+TrustedCertificateFile=/etc/ssl/certs/ca-certificates.crt
+```
+
+Or export via logging agent (Fluentd, Filebeat, etc.):
+
+```yaml
+# filebeat.yml example
+filebeat.inputs:
+  - type: journald
+    id: ic-orchestrator
+    include_matches:
+      - _SYSTEMD_UNIT=ic-orchestrator.service
+      - _SYSTEMD_UNIT=ic-replica.service
+      - _SYSTEMD_UNIT=ic-registry-replicator.service
+
+output.elasticsearch:
+  hosts: ["elasticsearch.example.com:9200"]
+  index: "ic-logs-%{+yyyy.MM.dd}"
+```
+
+## Visualization
+
+### Grafana Dashboards
+
+Create comprehensive Grafana dashboards for IC nodes:
+
+**Dashboard Panels:**
+
+1. **Overview**
+   - Nodes up/down
+   - Total replica versions
+   - Key rotation status
+   - Critical errors
+
+2. **System Resources**
+   - CPU usage (graph)
+   - Memory usage (graph)
+   - Disk I/O (graph)
+   - Network traffic (graph)
+
+3. **IC Operations**
+   - Registry versions (graph)
+   - Upgrade status
+   - Process restarts
+   - Reboot duration
+
+4. **Errors and Alerts**
+   - Critical errors table
+   - Active alerts
+   - Error rate graphs
+
+**Example Panel Query:**
+
+```promql
+# CPU usage by node
+100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="node-exporter"}[5m])) * 100)
+
+# Registry synchronization lag
+time() - firewall_registry_version
+
+# Key rotation status
+orchestrator_key_rotation_status
+```
+
+## Monitoring Best Practices
+
+<Steps>
+  <Step title="Monitor All Endpoints">
+    Scrape all three metrics endpoints (replica, orchestrator, node_exporter) to get complete visibility.
+  </Step>
+
+  <Step title="Set Appropriate Scrape Intervals">
+    - High-frequency metrics (replica): 15s
+    - Medium-frequency metrics (orchestrator): 30s
+    - Low-frequency metrics (node_exporter): 60s
+  </Step>
+
+  <Step title="Configure Critical Alerts">
+    Alert on critical errors immediately - they indicate serious issues requiring investigation.
+  </Step>
+
+  <Step title="Track Trends">
+    Monitor long-term trends for:
+    - Resource usage growth
+    - Error rates
+    - Performance degradation
+  </Step>
+
+  <Step title="Document Baseline">
+    Establish baseline metrics for normal operation to identify anomalies.
+  </Step>
+
+  <Step title="Test Alert Paths">
+    Regularly test alert delivery to ensure notifications reach the right people.
+  </Step>
+</Steps>
+
+## Troubleshooting Monitoring Issues
+
+### Metrics Not Available
+
+**Check service status:**
+```bash
+systemctl status ic-replica
+systemctl status ic-orchestrator
+systemctl status node_exporter
+```
+
+**Test endpoint directly:**
+```bash
+curl -v http://localhost:9090/metrics
+curl -v http://localhost:9091/metrics
+curl -v http://localhost:9100/metrics
+```
+
+**Check firewall rules:**
+```bash
+# Firewall is managed by orchestrator
+# Check current rules:
+iptables -L -n -v
+```
+
+### High Scrape Duration
+
+<Note>
+Adapter metrics collection has built-in timeout protection to prevent slow adapters from blocking replica metrics.
+</Note>
+
+```rust
+// From rs/http_endpoints/metrics/src/lib.rs:24-28
+const DEFAULT_ADAPTER_COLLECTION_TIMEOUT: Duration = Duration::from_secs(1);
+const PROMETHEUS_TIMEOUT_FRACTION: f64 = 0.5;
+const PROMETHEUS_TIMEOUT_HEADER: &str = "X-Prometheus-Scrape-Timeout-Seconds";
+```
+
+If scrapes are timing out:
+- Increase Prometheus scrape timeout
+- Check for performance issues on the node
+- Review adapter health if replica metrics are slow
+
+### Missing Custom Metrics
+
+**Check metric scripts:**
+```bash
+# Verify custom metric generation
+systemctl status metrics_tool.service
+systemctl status custom-metrics.service
+
+# Check timers
+systemctl list-timers | grep metrics
+```
+
+**Manually run metric collection:**
+```bash
+/opt/ic/bin/custom-metrics.sh
+```
+
+## Next Steps
+
+- [Configure Upgrades](/operations/upgrades) - Learn about upgrade monitoring
+- [Node Provider Guide](/operations/node-provider-guide) - Operational best practices
+- [Node Setup](/operations/node-setup) - Initial node configuration

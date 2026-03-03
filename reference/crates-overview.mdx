@@ -1,0 +1,112 @@
+---
+title: Rust Crates Overview
+description: Overview of the Internet Computer Rust crate architecture and organization
+---
+
+The Internet Computer replica is built using a modular Rust crate architecture organized into several key categories. This reference documentation covers the core crates that form the foundation of the IC protocol implementation.
+
+## Workspace Structure
+
+The IC Rust codebase is organized as a Cargo workspace with over 500 crates located in the `rs/` directory. The workspace uses Rust edition 2024 and version 0.9.0 across all crates.
+
+### Key Directories
+
+- **rs/types/** - Core type definitions and data structures
+- **rs/interfaces/** - Public trait definitions for component boundaries
+- **rs/registry/** - Registry client and data provider implementations
+- **rs/crypto/** - Cryptographic primitives and protocols
+- **rs/consensus/** - Consensus protocol implementation
+- **rs/execution_environment/** - Canister execution and management
+- **rs/messaging/** - Message routing and XNet communication
+- **rs/state_manager/** - Replicated state management
+
+## Core Crate Categories
+
+### Types Crates
+
+The types crates provide fundamental data structures used throughout the replica:
+
+- **ic-base-types** - Basic types like `CanisterId`, `PrincipalId`, `SubnetId`, `NodeId`, and `RegistryVersion`
+- **ic-types** - Higher-level types for messages, crypto, consensus, and state management
+- **ic-wasm-types** - WebAssembly-specific type definitions
+- **ic-management-canister-types** - Management canister API types
+
+### Interfaces Crates
+
+Interfaces define public APIs between components, reducing coupling:
+
+- **ic-interfaces** - Main interfaces for consensus, execution, messaging, and crypto
+- **ic-interfaces-registry** - Registry client trait definitions
+- **ic-interfaces-state-manager** - State manager interfaces
+- **ic-interfaces-certified-stream-store** - Certified stream storage interfaces
+
+### Registry Crates
+
+Registry crates handle distributed configuration and metadata:
+
+- **ic-registry-client** - Client for querying registry data
+- **ic-registry-client-helpers** - Helper functions for common registry queries
+- **ic-registry-canister** - Registry canister implementation
+- **ic-registry-transport** - Network transport layer for registry data
+- **ic-registry-local-store** - Local caching of registry data
+
+## Workspace Dependencies
+
+The workspace uses shared dependencies defined in `Cargo.toml`:
+
+```toml
+[workspace.package]
+version = "0.9.0"
+authors = ["The Internet Computer Project Developers"]
+description = "Autonomous serverless cloud functionality for the public Internet."
+edition = "2024"
+```
+
+### Common Dependencies
+
+- **Serialization**: `serde`, `candid`, `prost`, `bincode`
+- **Async**: `tokio`, `futures`, `async-trait`
+- **Cryptography**: `ring`, `ed25519-dalek`, `k256`, `p256`
+- **Networking**: `hyper`, `axum`, `tower`, `quinn`
+- **Testing**: `proptest`, `mockall`, `assert_matches`
+
+## Build Profiles
+
+The workspace defines several build profiles:
+
+- **release** - Standard release build with debug info for profiling
+- **release-stripped** - Release build with thin LTO and no debug info
+- **release-lto** - Release build with thin LTO optimization
+- **canister-release** - Optimized for WebAssembly canister size (`opt-level = 'z'`)
+
+## Module Organization Principles
+
+### Separation of Concerns
+
+The crate structure follows clean architecture principles:
+
+1. **Types** - Pure data structures with minimal dependencies
+2. **Interfaces** - Trait definitions without implementation details
+3. **Implementation** - Concrete implementations of interfaces
+4. **Test Utilities** - Shared testing infrastructure
+
+### Dependency Direction
+
+```
+Interfaces ← Types
+    ↑
+Implementations
+```
+
+Implementations depend on interfaces and types, but types and interfaces remain independent of specific implementations.
+
+## Next Steps
+
+- [Types Reference](/reference/types) - Detailed documentation of core type definitions
+- [Interfaces Reference](/reference/interfaces) - Interface trait documentation
+- [Registry Reference](/reference/registry) - Registry system architecture
+
+## Related Resources
+
+- [Cargo Workspace Documentation](https://doc.rust-lang.org/cargo/reference/workspaces.html)
+- [IC Repository Structure](https://github.com/dfinity/ic)

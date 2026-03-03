@@ -1,0 +1,251 @@
+---
+title: HostOS
+description: HostOS is the hypervisor operating system that launches and runs GuestOS in a virtual machine
+---
+
+## Introduction
+
+**HostOS** refers to the operating system running on the host machine. Its main responsibility is to launch and run the GuestOS in a virtual machine using QEMU and libvirt.
+
+In terms of its capabilities, HostOS is intentionally limited by design to not perform any trusted capabilities - anything related to the Internet Computer Protocol (replica, orchestrator, etc.) runs exclusively in GuestOS.
+
+## Key Responsibilities
+
+<CardGroup cols={2}>
+  <Card title="Virtualization" icon="server">
+    Manages QEMU/libvirt to run GuestOS in a virtual machine with CPU passthrough
+  </Card>
+  <Card title="Isolation" icon="shield">
+    Provides secure isolation between the hypervisor and IC protocol execution
+  </Card>
+  <Card title="Communication" icon="network-wired">
+    Enables controlled GuestOS-to-HostOS communication via VSOCK interface
+  </Card>
+  <Card title="Updates" icon="arrows-rotate">
+    Supports A/B partition updates for zero-downtime upgrades
+  </Card>
+</CardGroup>
+
+## Disk Partitioning
+
+HostOS uses a sophisticated partitioning layout with LVM (Logical Volume Manager) to support both HostOS and GuestOS with A/B partition schemes for updates.
+
+### Partition Schema
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Physical Disk                                    │
+├──────┬──────┬─────────────────────────────────────────────────────────┬─┤
+│ EFI  │ GRUB │              LVM Physical Volume                        │ │
+├──────┴──────┴─────────────────────────────────────────────────────────┴─┤
+│                                                                           │
+│  HostOS                              │  GuestOS                          │
+│  ┌───────┬──────┬──────┬──────┬────┐│  ┌───────┬──────┬──────┬──────┬─┐│
+│  │Config │Boot A│Root A│Boot B│Root│││  │Config │Boot A│Root A│Boot B│…││
+│  │       │ Var A│      │ Var B│    │││  │       │ Var A│      │ Var B│ ││
+│  └───────┴──────┴──────┴──────┴────┘│  └───────┴──────┴──────┴──────┴─┘│
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+Both HostOS and GuestOS have separate configuration and A/B partitions. The A/B partitions enable a dual-boot system that can be updated and maintained without any downtime.
+
+<Tabs>
+  <Tab title="Primary Partitions">
+    - **EFI**: EFI System Partition (ESP) - 100 MB
+    - **GRUB**: GRUB bootloader configuration - 100 MB
+  </Tab>
+  <Tab title="HostOS LVM Volumes">
+    - **Config**: Configuration files - 100 MB
+    - **Boot A/B**: Boot partitions - 1 GB each
+    - **Root A/B**: Root filesystems - 10 GB each
+    - **Var A/B**: Variable data (logs) - 10 GB each
+    - **Unallocated Reserve**: Reserved space - 20 GB
+  </Tab>
+  <Tab title="GuestOS LVM Volumes">
+    - **Config**: Configuration files - 100 MB
+    - **Boot A/B**: Boot partitions - 1 GB each
+    - **Root A/B**: Root filesystems - 10 GB each
+    - **Var A/B**: Variable data (logs) - 10 GB each
+    - **Empty**: Remaining disk space (100% FREE)
+  </Tab>
+</Tabs>
+
+<Note>
+The exact partitioning layout is defined in `ic-os/hostos/partitions.csv` and the LVM configuration is in `ic-os/hostos/volumes.csv`.
+</Note>
+
+### Root Partition
+
+The root partition is formatted as ext4 and mounted as **read-only** for security:
+
+```fstab
+# <file system> <mount point>   <type>  <options>              <dump>  <pass>
+/dev/rootfs     /               ext4    ro,errors=remount-ro   0       1
+```
+
+## System Users
+
+In addition to regular Ubuntu user accounts, HostOS includes these specialized users:
+
+| Username | Home Directory | Shell | Description |
+|----------|---------------|-------|-------------|
+| `backup` | `/var/lib/backup` | `/bin/bash` | Backup subnet state |
+| `readonly` | `/var/lib/readonly` | `/bin/bash` | Administrative read-only account for Node Providers/Technicians |
+| `admin` | `/var/lib/admin` | `/bin/bash` | Administrative account for Node Providers/Technicians |
+| `node_exporter` | `/home/node_exporter` | `/usr/sbin/nologin` | node_exporter service account |
+
+## Virtualization (QEMU/Libvirt)
+
+HostOS uses QEMU with libvirt for virtualization management.
+
+### Virtual Machine Configuration
+
+All virtual machines are configured using the libvirt XML format. The configuration is created by the code in `config::guest_vm_config`.
+
+Key features:
+- **CPU Passthrough**: GuestOS VM is configured with CPU passthrough, allowing direct access to physical CPU features and capabilities
+- **Memory**: Configurable based on deployment requirements
+- **Networking**: Bridged networking for IC communication
+- **Storage**: Virtio block devices for optimal performance
+
+## VSOCK Interface
+
+The primary goal of virtualization is to securely isolate operating systems and system resources. However, the virtual machine (GuestOS) needs to communicate with the hypervisor (HostOS) for certain functions.
+
+### What is VSOCK?
+
+The **VSOCK (VM Socket)** acts as a controlled environment for GuestOS to communicate with and steer the HostOS.
+
+To maintain the highest level of isolation between the two operating systems:
+- GuestOS is restricted to strictly defined commands
+- All VSOCK commands are initiated from the GuestOS
+- HostOS responds only to whitelisted operations
+
+<Note>
+For a complete list of VSOCK commands and detailed documentation, refer to `rs/ic_os/vsock/README.md`.
+</Note>
+
+## Firewall
+
+The HostOS firewall ruleset is intentionally restrictive. A new disk image must be proposed and blessed through governance to update the rules.
+
+### Input Ports
+
+The following TCP/UDP input ports are open:
+
+| Version | Protocol | Port | Source | Description |
+|---------|----------|------|--------|-------------|
+| IPv4 | TCP | 22 | RFC 1918 | OpenSSH |
+| IPv4 | UDP | 67 | RFC 1918 | DHCP |
+| IPv6 | TCP | 22 | Delegated IPv6 subnets | OpenSSH |
+| IPv6 | TCP | 9100 | Delegated IPv6 subnets | node_exporter |
+| IPv6 | TCP | 19531 | Delegated IPv6 subnets | systemd-journal-gatewayd |
+
+### Output Ports
+
+The following TCP/UDP output ports are open:
+
+| Version | Protocol | Port | Destination | Description |
+|---------|----------|------|-------------|-------------|
+| IPv6 | TCP | 53 | Any | DNS |
+| IPv6 | UDP | 53 | Any | DNS |
+| IPv6 | UDP | 123 | Any | NTP |
+| IPv6 | TCP | 80 | Any | HTTP (update images) |
+| IPv6 | TCP | 443 | Any | HTTPS (update images) |
+
+<Warning>
+The firewall ruleset is hard-coded in `nftables.conf`. Changes require building and deploying a new image through governance.
+</Warning>
+
+## Build Variants
+
+HostOS has two main build variants:
+
+<Tabs>
+  <Tab title="Production">
+    **Target**: `prod`
+    
+    - Console access disabled
+    - Used for production node deployments
+    - Image size: ~880 MB (disk), ~877 MB (update)
+    
+    ```bash
+    bazel build //ic-os/hostos/envs/prod/...
+    ```
+  </Tab>
+  <Tab title="Development">
+    **Target**: `dev`
+    
+    - Console access enabled
+    - Username and password: `root`
+    - Used for testing and development
+    - Includes additional debugging tools
+    
+    ```bash
+    bazel build //ic-os/hostos/envs/dev/...
+    ```
+  </Tab>
+</Tabs>
+
+## Building HostOS
+
+HostOS images can be built using Bazel:
+
+```bash
+# Build production HostOS
+bazel build //ic-os/hostos/envs/prod/...
+
+# Build development HostOS
+bazel build //ic-os/hostos/envs/dev/...
+
+# Output location
+# Disk image: bazel-bin/ic-os/hostos/envs/<TARGET>/disk-img.tar.zst
+# Update image: bazel-bin/ic-os/hostos/envs/<TARGET>/update-img.tar.zst
+```
+
+The build produces:
+- **disk-img.tar.zst**: Full disk image for initial installation
+- **update-img.tar.zst**: Update image for upgrading running systems
+- **update-img-test.tar.zst**: Test variant of update image
+
+## Update Process
+
+HostOS supports zero-downtime updates using A/B partitions:
+
+<Steps>
+  <Step title="Download Update">
+    HostOS downloads the update image from the specified URL.
+  </Step>
+  <Step title="Write to Inactive Partition">
+    The update is written to the inactive partition (A or B).
+  </Step>
+  <Step title="Verify Update">
+    The update image is verified using checksums.
+  </Step>
+  <Step title="Switch Active Partition">
+    GRUB bootloader configuration is updated to boot from the new partition.
+  </Step>
+  <Step title="Reboot">
+    The system reboots into the updated partition.
+  </Step>
+  <Step title="Rollback on Failure">
+    If the new partition fails to boot, GRUB automatically rolls back to the previous partition.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building Images" icon="hammer" href="/ic-os/building-images">
+    Learn how to build HostOS images locally
+  </Card>
+  <Card title="GuestOS" icon="microchip" href="/ic-os/guestos">
+    Understand the GuestOS that runs on HostOS
+  </Card>
+  <Card title="SetupOS" icon="usb-drive" href="/ic-os/setupos">
+    Learn how HostOS is initially installed
+  </Card>
+  <Card title="Overview" icon="book" href="/ic-os/overview">
+    Back to IC-OS overview
+  </Card>
+</CardGroup>

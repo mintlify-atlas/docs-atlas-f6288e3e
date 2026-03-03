@@ -1,0 +1,126 @@
+---
+title: Introduction to the Internet Computer
+description: Discover the Internet Computer Protocol - the world's first blockchain that runs at web speed with unbounded capacity
+---
+
+# Welcome to the Internet Computer Protocol
+
+The Internet Computer is the world's first blockchain that runs at web speed and can increase its capacity without bound. Like the Internet (which is composed of many machines adhering to TCP/IP protocol) and blockchain protocols (such as Bitcoin and Ethereum), the Internet Computer represents a fundamental breakthrough in distributed systems.
+
+## What Makes ICP Special?
+
+The Internet Computer Protocol (ICP) is not just another blockchain - it's a complete reimagining of what decentralized infrastructure can achieve:
+
+<CardGroup cols={2}>
+  <Card title="Web Speed Performance" icon="gauge-high">
+    Execute smart contracts at speeds comparable to traditional web applications, not limited by traditional blockchain bottlenecks
+  </Card>
+  
+  <Card title="Infinite Scalability" icon="chart-line">
+    Increase capacity without bound by adding new subnet blockchains to the network
+  </Card>
+  
+  <Card title="Autonomous Canisters" icon="cube">
+    Deploy software canisters - an evolution of smart contracts that can serve web content directly to users
+  </Card>
+  
+  <Card title="Decentralized Governance" icon="users">
+    Governed by the Network Nervous System (NNS), a fully on-chain DAO managing the entire network
+  </Card>
+</CardGroup>
+
+## Core Innovation: The Replica
+
+At the heart of the Internet Computer is the **replica** - the Rust implementation of the ICP protocol that runs on node machines. Think of it as the "client" in traditional blockchain terminology, but far more sophisticated:
+
+```rust
+// From rs/replica/bin/replica/main.rs:260
+info!(logger, "Replica Started");
+info!(logger, "Running in subnetwork {:?}", subnet_id);
+```
+
+The replica orchestrates multiple Tokio runtimes for different components:
+- **Main Runtime**: Inter-process communication, crypto, networking adapters
+- **P2P Runtime**: Peer-to-peer communication
+- **HTTP Runtime**: Serving user requests  
+- **XNet Runtime**: Cross-subnet messaging
+
+## Key Features
+
+### Novel Consensus Protocol
+
+ICP uses new and novel cryptography that doesn't require traditional "mining". The consensus algorithm combines:
+- Random beacon generation for unpredictable block proposals
+- Threshold signatures for efficient validation
+- Notarization and finalization for deterministic finality
+
+### Canister Smart Contracts
+
+Canisters are more than smart contracts - they're **autonomous serverless cloud functionality** for the public Internet:
+- Execute WebAssembly code in isolated sandboxed processes
+- Store data persistently on-chain
+- Serve HTTP content directly to end users
+- Communicate across subnets seamlessly
+
+### Chain-Key Cryptography
+
+Based on threshold cryptography and distributed key generation:
+- Single public key for the entire subnet
+- Non-interactive DKG for key generation
+- Enables instant finality and cross-chain integration
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="What is ICP?" icon="circle-question" href="/what-is-icp">
+    Deep dive into the architecture and components
+  </Card>
+  
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Build the replica locally and start exploring
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the layered system design
+  </Card>
+  
+  <Card title="Consensus" icon="handshake" href="/concepts/consensus">
+    Learn how ICP achieves distributed agreement
+  </Card>
+</CardGroup>
+
+## Community & Resources
+
+<Info>
+**Community Forum**: Join discussions at [forum.dfinity.org](https://forum.dfinity.org/)
+
+**Dashboard**: Monitor the network at [dashboard.internetcomputer.org](https://dashboard.internetcomputer.org)
+
+**DFINITY Foundation**: Learn more at [dfinity.org](https://dfinity.org/)
+</Info>
+
+## Who Should Use This Documentation?
+
+<AccordionGroup>
+  <Accordion title="Systems Engineers & Cryptographers">
+    You're in the right place! This documentation covers the low-level implementation details of the ICP protocol, built from the actual source code.
+  </Accordion>
+  
+  <Accordion title="App Developers">
+    If you want to build applications on ICP, check out the [Canister SDK](https://sdk.dfinity.org/docs/quickstart/quickstart-intro.html) - it's optimized for rapid development and much more lightweight.
+  </Accordion>
+  
+  <Accordion title="Blockchain Enthusiasts">
+    To understand the protocol design (not implementation), see the [Consensus Protocol](https://medium.com/dfinity/achieving-consensus-on-the-internet-computer-ee9fbfbafcbc) and [IC Interface Specification](https://sdk.dfinity.org/docs/interface-spec/index.html).
+  </Accordion>
+  
+  <Accordion title="Node Providers">
+    Learn about running nodes at [Internet Computer Wiki - For Node Providers](https://wiki.internetcomputer.org/wiki/Internet_Computer_wiki#For_Node_Providers).
+  </Accordion>
+</AccordionGroup>
+
+---
+
+<Note>
+This is an open-source project licensed under Apache 2.0 (with some components under Internet Computer Community Source licenses). The code you see in this documentation is pulled directly from the [public repository](https://github.com/dfinity/ic).
+</Note>

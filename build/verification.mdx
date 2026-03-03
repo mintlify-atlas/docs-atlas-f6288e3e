@@ -1,0 +1,421 @@
+---
+title: Build Verification
+description: Verify reproducible builds of IC-OS update images and binaries
+---
+
+The Internet Computer provides a robust system for verifying the reproducibility of builds. This ensures that the binary images running on the network can be independently verified against the published source code.
+
+## Overview
+
+Reproducible builds allow anyone to:
+
+1. Build IC-OS images or binaries from source
+2. Compare the resulting checksums with official releases
+3. Verify that published binaries match the source code
+4. Ensure no tampering or unauthorized modifications
+
+<Note>
+Every [release proposal](https://dashboard.internetcomputer.org/releases) includes detailed verification instructions with specific commit hashes.
+</Note>
+
+## Prerequisites
+
+Before verifying builds, ensure you have:
+
+- **Operating System**: Ubuntu 22.04 or higher
+- **Python**: Version 3.x
+- **curl**: For downloading the verification script
+- **Disk Space**: ~100 GB free in `$HOME` (or custom cache directory)
+
+### Installing Prerequisites
+
+```bash
+sudo apt update
+sudo apt install -y python3 curl
+```
+
+Verify installation:
+
+```bash
+python3 --version
+curl --version
+```
+
+## Quick Start
+
+The fastest way to verify a release is using the `repro-check` script:
+
+### Verify by Proposal Number
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -p <proposal_number>
+```
+
+Replace `{COMMIT_ID}` with the actual commit hash from the release proposal.
+
+### Verify by Git Commit
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -c {COMMIT_ID}
+```
+
+<Warning>
+Always use versioned repro-check URLs (with `{COMMIT_ID}`) instead of `master` to ensure compatibility between the verification script and the build system for that specific commit.
+</Warning>
+
+## Component-Specific Verification
+
+You can verify individual IC-OS components:
+
+### Verify GuestOS Only
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -c {COMMIT_ID} --guestos
+```
+
+**GuestOS** contains the replica and core IC components that run on subnet nodes.
+
+### Verify HostOS Only
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -c {COMMIT_ID} --hostos
+```
+
+**HostOS** is the base operating system that provides the foundation for running GuestOS.
+
+### Verify SetupOS Only
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -c {COMMIT_ID} --setupos
+```
+
+**SetupOS** is used for initial node deployment and configuration.
+
+## Manual Verification Process
+
+For a more hands-on approach, follow these steps:
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/dfinity/ic.git
+    cd ic
+    git checkout {COMMIT_ID}
+    ```
+    Replace `{COMMIT_ID}` with the commit from the release proposal.
+  </Step>
+  
+  <Step title="Build the artifacts">
+    ```bash
+    ./ci/container/build-ic.sh -i
+    ```
+    This builds all IC-OS images. Build time: 30-60 minutes.
+  </Step>
+  
+  <Step title="Locate the checksums">
+    ```bash
+    cat artifacts/icos/guestos/update/SHA256SUMS
+    cat artifacts/icos/hostos/update/SHA256SUMS
+    cat artifacts/icos/setupos/SHA256SUMS
+    ```
+  </Step>
+  
+  <Step title="Download official checksums">
+    Visit the [IC Dashboard](https://dashboard.internetcomputer.org/releases) and find the release proposal. Download the official SHA256SUMS files.
+  </Step>
+  
+  <Step title="Compare checksums">
+    ```bash
+    diff artifacts/icos/guestos/update/SHA256SUMS official-SHA256SUMS-guestos.txt
+    ```
+    No output means the files are identical - verification successful!
+  </Step>
+</Steps>
+
+## Understanding Checksums
+
+### SHA256SUMS Format
+
+Checksum files follow the standard format:
+
+```text SHA256SUMS
+deadbeef1234567890abcdef...  update-img.tar.gz
+abcdef1234567890deadbeef...  disk-img.tar.gz
+```
+
+Each line contains:
+1. SHA-256 hash (64 hexadecimal characters)
+2. Two spaces
+3. Filename
+
+### Verifying Checksums Manually
+
+You can verify individual files:
+
+```bash
+# Calculate checksum
+sha256sum artifacts/icos/guestos/update/update-img.tar.gz
+
+# Compare with expected
+grep update-img.tar.gz artifacts/icos/guestos/update/SHA256SUMS
+```
+
+## Cache Directory
+
+By default, the verification process uses `$HOME` for caching build artifacts.
+
+### Using a Custom Cache Directory
+
+If `$HOME` has limited space:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+    python3 - -c {COMMIT_ID} --cache-dir /path/to/large/volume
+```
+
+### Cache Directory Structure
+
+```
+~/.cache/
+└── bazel/                    # Bazel build cache (~30-50 GB)
+    ├── _bazel_<user>/
+    └── ...
+
+/tmp/
+└── zig-cache/               # Zig compiler cache (~10-20 GB)
+```
+
+## Build Reproducibility
+
+### What Makes Builds Reproducible?
+
+The IC build system ensures reproducibility through:
+
+1. **Hermetic builds**: All dependencies are explicitly declared
+2. **Fixed versions**: Exact versions in `MODULE.bazel` and `.bazelversion`
+3. **Containerized environment**: Builds run in consistent containers
+4. **No timestamp embedding**: Builds don't include build time
+5. **Deterministic toolchains**: Hermetic C++ and Rust toolchains
+
+### Sources of Non-Determinism
+
+The build system actively avoids:
+
+- Filesystem timestamps
+- Network-dependent operations during build
+- Host environment variables (except explicitly allowed)
+- Random number generation
+- Parallel build ordering issues
+
+## Verification Script Details
+
+The `repro-check` script performs these steps:
+
+<Steps>
+  <Step title="Fetch proposal data">
+    If using `-p <proposal_number>`, fetches proposal details from the IC to get the commit hash.
+  </Step>
+  
+  <Step title="Clone and checkout">
+    Clones the IC repository and checks out the specified commit.
+  </Step>
+  
+  <Step title="Build images">
+    Runs the containerized build process to create IC-OS images.
+  </Step>
+  
+  <Step title="Download official artifacts">
+    Fetches the official images from the IC CDN.
+  </Step>
+  
+  <Step title="Compare checksums">
+    Compares locally built checksums with official ones.
+  </Step>
+  
+  <Step title="Report results">
+    Displays verification success or failure with details.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Verification Fails
+
+If checksums don't match:
+
+<CodeGroup>
+```bash Check Commit
+# Ensure you're on the exact commit
+git log -1
+cat .git/HEAD
+```
+
+```bash Clean Build
+# Remove build artifacts and retry
+bazel clean --expunge
+rm -rf artifacts/
+./ci/container/build-ic.sh -i
+```
+
+```bash Verify Script Version
+# Ensure repro-check matches the commit
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | head -n 5
+```
+</CodeGroup>
+
+### Disk Space Issues
+
+If running out of space:
+
+```bash
+# Check available space
+df -h
+
+# Use custom cache directory
+--cache-dir /mnt/large-volume
+
+# Clean Bazel cache
+bazel clean
+```
+
+### Container Issues
+
+```bash
+# Verify Podman is working
+podman info
+
+# Clean container state
+podman system prune -a
+
+# Restart Podman service
+systemctl restart podman
+```
+
+### Python Version Issues
+
+Ensure Python 3.x is available:
+
+```bash
+python3 --version
+# Should show Python 3.x
+
+# If not found
+sudo apt install python3
+```
+
+## Advanced Verification
+
+### Verify Specific Files
+
+To verify individual files within an image:
+
+```bash
+# Extract update image
+tar -xzf artifacts/icos/guestos/update/update-img.tar.gz
+
+# Verify specific binary
+sha256sum boot.img
+```
+
+### Automated Verification Pipeline
+
+For continuous verification:
+
+```bash
+#!/bin/bash
+for commit in $(cat release-commits.txt); do
+    echo "Verifying $commit"
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/$commit/ci/scripts/repro-check | \
+        python3 - -c $commit || echo "FAILED: $commit"
+done
+```
+
+### Verifying Binaries
+
+While the repro-check script focuses on IC-OS images, you can also verify binaries:
+
+```bash
+# Build binaries
+./ci/container/build-ic.sh -b
+
+# Check checksums
+cat artifacts/release/SHA256SUMS
+
+# Compare with official release
+sha256sum artifacts/release/replica
+```
+
+## Security Considerations
+
+### Why Verification Matters
+
+Reproducible build verification is critical for:
+
+1. **Transparency**: Anyone can verify what's running on the network
+2. **Trust**: No need to trust the build infrastructure
+3. **Security**: Detect unauthorized modifications
+4. **Auditability**: Independent verification of upgrades
+
+### Best Practices
+
+- Always use versioned `repro-check` URLs with commit hashes
+- Verify on independent infrastructure (not IC-provided)
+- Keep verification logs for audit trails
+- Use multiple verification sources when possible
+
+## NNS Proposals
+
+IC upgrades are governed by NNS proposals. Each proposal includes:
+
+- **Commit hash**: Exact source code version
+- **Image hashes**: Expected SHA-256 checksums
+- **Verification instructions**: How to reproduce the build
+
+View proposals at:
+- [IC Dashboard - Releases](https://dashboard.internetcomputer.org/releases)
+- [GitHub - NNS Proposals](https://github.com/dfinity/nns-proposals)
+
+## Example Verification
+
+Complete example verifying a specific release:
+
+```bash
+# Example: Verify release at commit abc123def456
+
+# 1. Verify using repro-check script
+curl -fsSL https://raw.githubusercontent.com/dfinity/ic/abc123def456/ci/scripts/repro-check | \
+    python3 - -c abc123def456
+
+# 2. Or manual verification
+git clone https://github.com/dfinity/ic.git
+cd ic
+git checkout abc123def456
+
+# 3. Build
+./ci/container/build-ic.sh -i
+
+# 4. Verify checksums
+cat artifacts/icos/guestos/update/SHA256SUMS
+
+# Expected output:
+# deadbeef1234... update-img.tar.gz
+# abcdef567890... disk-img.tar.gz
+```
+
+## Resources
+
+- [IC Dashboard](https://dashboard.internetcomputer.org/releases) - View all releases
+- [NNS Proposals](https://github.com/dfinity/nns-proposals) - Governance proposals
+- [IC-OS README](https://github.com/dfinity/ic/blob/master/ic-os/README.adoc) - Detailed IC-OS documentation
+- [Reproducible Builds](https://reproducible-builds.org/) - General principles
+
+## Next Steps
+
+- [Build Prerequisites](/build/prerequisites) - Set up your build environment
+- [Building the Replica](/build/building-replica) - Build IC components
+- [Bazel Overview](/build/bazel-overview) - Understand the build system

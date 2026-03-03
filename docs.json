@@ -1,122 +1,181 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Internet Computer Protocol",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#3B00B9",
+    "light": "#7C4DFF",
+    "dark": "#1E0062"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/AleDema/ic"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/AleDema/ic"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Overview",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Getting Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "what-is-icp",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
-            ]
-          },
-          {
-            "group": "Writing content",
-            "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "concepts/architecture",
+              "concepts/consensus",
+              "concepts/canisters",
+              "concepts/network-nervous-system"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Building & Deployment",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Build System",
             "pages": [
-              "api-reference/introduction"
+              "build/prerequisites",
+              "build/building-replica",
+              "build/bazel-overview",
+              "build/verification"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "IC-OS Images",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "ic-os/overview",
+              "ic-os/setupos",
+              "ic-os/hostos",
+              "ic-os/guestos",
+              "ic-os/building-images"
+            ]
+          },
+          {
+            "group": "Node Operations",
+            "pages": [
+              "operations/node-setup",
+              "operations/node-provider-guide",
+              "operations/monitoring",
+              "operations/upgrades"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Core Components",
+            "pages": [
+              "architecture/replica",
+              "architecture/execution-environment",
+              "architecture/state-manager",
+              "architecture/message-routing"
+            ]
+          },
+          {
+            "group": "Consensus & Cryptography",
+            "pages": [
+              "architecture/consensus-layer",
+              "architecture/crypto-layer",
+              "architecture/threshold-signatures",
+              "architecture/dkg"
+            ]
+          },
+          {
+            "group": "Networking",
+            "pages": [
+              "architecture/p2p-layer",
+              "architecture/boundary-nodes",
+              "architecture/xnet-messaging"
+            ]
+          },
+          {
+            "group": "Chain Integrations",
+            "pages": [
+              "architecture/bitcoin-integration",
+              "architecture/ethereum-integration",
+              "architecture/https-outcalls"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Contributing",
+            "pages": [
+              "contributing/getting-started",
+              "contributing/code-structure",
+              "contributing/rust-dependencies",
+              "contributing/testing"
+            ]
+          },
+          {
+            "group": "Canisters & Smart Contracts",
+            "pages": [
+              "canisters/overview",
+              "canisters/canister-lifecycle",
+              "canisters/system-api",
+              "canisters/inter-canister-calls"
+            ]
+          },
+          {
+            "group": "Published Packages",
+            "pages": [
+              "packages/overview",
+              "packages/pocket-ic",
+              "packages/cryptography",
+              "packages/ledger-types"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Rust Crates",
+            "pages": [
+              "reference/crates-overview",
+              "reference/types",
+              "reference/interfaces",
+              "reference/registry"
+            ]
+          },
+          {
+            "group": "Governance",
+            "pages": [
+              "reference/nns",
+              "reference/sns",
+              "reference/proposals"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "reference/security-model",
+              "reference/vulnerability-reporting",
+              "reference/cryptographic-protocols"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

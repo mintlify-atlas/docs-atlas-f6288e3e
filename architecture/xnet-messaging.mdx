@@ -1,0 +1,624 @@
+---
+title: Cross-Subnet (XNet) Messaging
+description: Architecture of the Internet Computer's cross-subnet communication protocol
+---
+
+## Overview
+
+XNet (Cross-Network) messaging enables communication between canisters on different subnets of the Internet Computer. It implements a reliable, ordered message delivery protocol with cryptographic guarantees, allowing subnets to operate independently while maintaining global state consistency.
+
+## Architecture
+
+```
+Subnet A                          Subnet B
++----------------+              +----------------+
+| Canister       |              | Canister       |
+|   Request  ----+--> Stream -->+---> Response   |
+|   Response <---+--- Stream <--+---- Request    |
++----------------+              +----------------+
+        |                              |
+        v                              v
+  State Manager                  State Manager
+        |                              |
+        v                              v
+  XNet Payload                   XNet Payload
+    Builder                        Builder
+        |                              |
+        +--------> Registry <----------+
+```
+
+### Key Concepts
+
+**Stream**: Unidirectional, ordered message queue between two subnets
+
+**Stream Slice**: Subset of stream messages with cryptographic proof
+
+**XNet Payload**: Collection of stream slices included in a consensus block
+
+**Certified Slice**: Stream slice with Merkle proof and threshold signature
+
+## Stream Model
+
+### Stream Structure
+
+Each subnet pair has bidirectional streams:
+
+```rust
+// Source: rs/types/types/src/xnet.rs
+pub struct StreamHeader {
+    begin: StreamIndex,              // First available message
+    end: StreamIndex,                // Next message index
+    signals_end: StreamIndex,        // Next expected signal
+    reject_signals: VecDeque<RejectSignal>,
+    flags: StreamFlags,
+}
+
+pub struct StreamSlice {
+    header: StreamHeader,
+    messages: Option<StreamIndexedQueue<StreamMessage>>,
+}
+```
+
+### Message Ordering
+
+**StreamIndex**: 64-bit monotonically increasing index
+
+```rust
+pub struct StreamIndexTag;
+pub type StreamIndex = AmountOf<StreamIndexTag, u64>;
+
+pub struct StreamIndexedQueue<T> {
+    begin: StreamIndex,
+    queue: VecDeque<T>,
+}
+```
+
+**Guarantees**:
+- Gap-free delivery (no missing indices)
+- In-order processing
+- Exactly-once semantics
+
+### Signals
+
+Reverse-direction acknowledgments:
+
+```rust
+pub struct RejectSignal {
+    pub reason: RejectReason,
+    pub index: StreamIndex,
+}
+
+pub enum RejectReason {
+    CanisterMigrating = 1,
+    CanisterNotFound = 2,
+    CanisterStopped = 3,
+    CanisterStopping = 4,
+    QueueFull = 5,
+    OutOfMemory = 6,
+    Unknown = 7,
+}
+```
+
+**Signal Types**:
+- **Accept**: Implicit (default, no signal object)
+- **Reject**: Explicit with reason code
+
+**Purpose**:
+- Enable garbage collection of delivered messages
+- Provide reject responses for failed induction
+- Prevent unbounded stream growth
+
+### Stream Limits
+
+```rust
+// Source: rs/xnet/payload_builder/src/lib.rs
+pub const MAX_SIGNALS: usize = MAX_STREAM_MESSAGES;
+pub const MAX_STREAM_MESSAGES: usize = 1000; // From config
+```
+
+**Enforcement**:
+- Maximum signals in header: prevents one-sided traffic
+- Message limit: prevents memory exhaustion
+- Byte limit: respects block size constraints
+
+## XNet Payload Builder
+
+### Component Architecture
+
+```rust
+pub struct XNetPayloadBuilderImpl {
+    state_manager: Arc<dyn StateManager<State = ReplicatedState>>,
+    certified_stream_store: Arc<dyn CertifiedStreamStore>,
+    registry: Arc<dyn RegistryClient>,
+    slice_pool: Box<dyn XNetSlicePool>,
+    refill_task_handle: RefillTaskHandle,
+    metrics: Arc<XNetPayloadBuilderMetrics>,
+    log: ReplicaLogger,
+}
+```
+
+### Payload Building Process
+
+1. **Query State**: Get current replicated state at certified height
+
+2. **Compute Expected Indices**: Calculate next expected message/signal for each stream
+
+```rust
+fn expected_indices_for_stream(
+    subnet_id: SubnetId,
+    state: &ReplicatedState,
+    payloads: &[&XNetPayload],
+) -> ExpectedIndices {
+    // Check past payloads for most recent slice
+    // Fall back to state streams if not found
+    ExpectedIndices {
+        message_index: signals_end,
+        signal_index: messages_begin,
+    }
+}
+```
+
+3. **Garbage Collect Pool**: Remove already-inducted messages
+
+```rust
+self.slice_pool.garbage_collect(stream_positions);
+```
+
+4. **Take Valid Slices**: Extract slices from pool within limits
+
+```rust
+let take_valid_slice = |subnet_id, begin, msg_limit, byte_limit| {
+    match self.slice_pool.take_slice(
+        subnet_id,
+        Some(&begin),
+        msg_limit,
+        Some(byte_limit),
+    ) {
+        Ok(Some((slice, slice_bytes))) => {
+            // Validate slice
+            // Return if valid
+        }
+        _ => None,
+    }
+};
+```
+
+5. **Prioritize Signals**: Add header-only slices first
+
+```rust
+// First pass: header-only slices (signals only)
+for (subnet_id, begin) in shuffled_stream_positions.iter() {
+    if let Some((header_only_slice, _, size_bytes)) =
+        take_valid_slice(*subnet_id, begin.clone(), Some(0), bytes_left)
+    {
+        stream_slices.insert(*subnet_id, header_only_slice);
+    }
+}
+```
+
+6. **Add Messages**: Replace headers with message slices where possible
+
+```rust
+// Second pass: slices with messages
+for (subnet_id, begin) in shuffled_stream_positions {
+    let msg_limit = get_msg_limit(subnet_id, &state);
+    if let Some((slice, message_count, slice_bytes)) =
+        take_valid_slice(subnet_id, begin, msg_limit, bytes_left)
+    {
+        stream_slices.insert(subnet_id, slice);
+    }
+}
+```
+
+7. **Build Payload**: Collect into XNetPayload
+
+```rust
+Ok((XNetPayload { stream_slices }, byte_size))
+```
+
+### Slice Validation
+
+```rust
+fn validate_slice(
+    subnet_id: SubnetId,
+    certified_slice: &CertifiedStreamSlice,
+    expected: &ExpectedIndices,
+    validation_context: &ValidationContext,
+    state: &ReplicatedState,
+    log_level: slog::Level,
+) -> SliceValidationResult {
+    // 1. Decode and verify signature
+    // 2. Validate stream bounds
+    // 3. Check expected indices match
+    // 4. Validate signals
+    // 5. Compute byte size
+}
+```
+
+**Validation Checks**:
+
+- **Signature**: Threshold signature from source subnet
+- **Stream bounds**: `begin <= message_index <= end`
+- **Slice bounds**: Messages within stream bounds
+- **Index continuity**: Messages start at expected index
+- **Signal validity**: Monotonic, within limits
+- **Message limits**: Respects backlog-based limits
+
+### Message Limits
+
+Backpressure mechanism:
+
+```rust
+pub fn get_msg_limit(subnet_id: SubnetId, state: &ReplicatedState) 
+    -> Option<usize> {
+    use SubnetType::*;
+    match state.metadata.own_subnet_type {
+        Application | VerifiedApplication | CloudEngine => None,
+        
+        System => {
+            // Limit incoming messages based on outgoing stream size
+            state.streams().get(&subnet_id)
+                .map(|stream| stream.messages().len())
+                .map(|len| SYSTEM_SUBNET_STREAM_MSG_LIMIT.saturating_sub(len))
+        }
+    }
+}
+```
+
+Prevents request/response imbalance on NNS and system subnets.
+
+### Signal Validation
+
+```rust
+const MAX_SIGNALS: usize = MAX_STREAM_MESSAGES;
+
+fn validate_signals(
+    signals_end: StreamIndex,
+    reject_signals: &VecDeque<RejectSignal>,
+    expected: StreamIndex,
+    state: &ReplicatedState,
+) -> SignalsValidationResult {
+    // 1. Check signals_end in valid range
+    if expected > signals_end || signals_end > self_messages_end {
+        return Invalid;
+    }
+    
+    // 2. Check signal count limit
+    if signals_end.get() - signals_begin.get() > 2 * MAX_SIGNALS {
+        return Invalid;
+    }
+    
+    // 3. Verify strict ordering
+    let mut next = signals_end;
+    for signal in reject_signals.iter().rev() {
+        if signal.index >= next {
+            return Invalid;
+        }
+        next = signal.index;
+    }
+    
+    Valid
+}
+```
+
+## Certified Stream Slice
+
+### Structure
+
+```rust
+pub struct CertifiedStreamSlice {
+    // Serialized state tree containing stream data
+    #[serde(with = "serde_bytes")]
+    pub payload: Vec<u8>,
+    
+    // Merkle proof for root hash computation
+    #[serde(with = "serde_bytes")]
+    pub merkle_proof: Vec<u8>,
+    
+    // Threshold signature on root hash
+    pub certification: Certification,
+}
+```
+
+### Certification Process
+
+1. **State Tree**: Stream data inserted into replicated state tree
+
+2. **Merkle Proof**: Generated for stream subtree
+
+3. **Root Hash**: Computed from payload + proof
+
+4. **Threshold Signature**: BLS signature from source subnet
+
+5. **Verification**: Destination subnet validates using source subnet's public key
+
+### Certified Stream Store
+
+```rust
+pub trait CertifiedStreamStore {
+    fn decode_certified_stream_slice(
+        &self,
+        subnet_id: SubnetId,
+        registry_version: RegistryVersion,
+        certified_slice: &CertifiedStreamSlice,
+    ) -> Result<StreamSlice, DecodeStreamError>;
+    
+    fn decode_valid_certified_stream_slice(
+        &self,
+        certified_slice: &CertifiedStreamSlice,
+    ) -> Result<StreamSlice, DecodeStreamError>;
+}
+```
+
+## Slice Pool
+
+### Interface
+
+```rust
+pub trait XNetSlicePool: Send + Sync {
+    fn take_slice(
+        &self,
+        subnet_id: SubnetId,
+        begin: Option<&ExpectedIndices>,
+        msg_limit: Option<usize>,
+        byte_limit: Option<usize>,
+    ) -> CertifiedSliceResult<Option<(CertifiedStreamSlice, usize)>>;
+    
+    fn observe_pool_size_bytes(&self);
+    
+    fn garbage_collect(
+        &self,
+        new_stream_positions: BTreeMap<SubnetId, ExpectedIndices>,
+    );
+}
+```
+
+### Background Refill
+
+Asynchronous slice fetching:
+
+```rust
+pub struct PoolRefillTask {
+    slice_pool: Arc<Mutex<CertifiedSlicePool>>,
+    endpoint_resolver: XNetEndpointResolver,
+    xnet_client: Arc<dyn XNetClient>,
+}
+```
+
+**Refill Cycle**:
+1. Triggered by payload building or validation
+2. Queries registry for peer nodes
+3. Fetches slices via HTTP from replicas
+4. Validates and adds to pool
+5. Updates metrics
+
+### Slice Fetching
+
+```rust
+pub struct XNetEndpointResolver {
+    registry: Arc<dyn RegistryClient>,
+    subnet_id: SubnetId,
+    node_operator_id: Vec<u8>,
+    proximity_map: Arc<ProximityMap>,
+}
+
+impl XNetEndpointResolver {
+    pub fn xnet_endpoint_url(
+        &self,
+        subnet_id: SubnetId,
+        witness_begin: StreamIndex,
+        msg_begin: StreamIndex,
+        byte_limit: usize,
+    ) -> Result<EndpointLocator, Error> {
+        let url = format!(
+            "http://{}/api/v1/stream/{}?msg_begin={}&witness_begin={}&byte_limit={}",
+            authority, self.subnet_id, msg_begin, witness_begin, byte_limit
+        );
+        // ...
+    }
+}
+```
+
+**Endpoint**: `/api/v1/stream/{subnet_id}?msg_begin={i}&witness_begin={j}&byte_limit={n}`
+
+### Proximity-Aware Selection
+
+```rust
+pub enum PeerLocation {
+    Local,  // Same data center
+    Remote, // Different data center
+}
+
+pub struct ProximityMap {
+    node_operator_id: Vec<u8>,
+    registry: Arc<dyn RegistryClient>,
+}
+```
+
+Prefers local peers for lower latency.
+
+## HTTP Client
+
+### XNet Client Interface
+
+```rust
+#[async_trait]
+pub trait XNetClient: Send + Sync {
+    async fn query_slice(
+        &self,
+        url: Uri,
+    ) -> Result<CertifiedStreamSlice, XNetClientError>;
+}
+```
+
+### Implementation
+
+```rust
+pub struct XNetClientImpl {
+    client: Client<TlsConnector, Body>,
+    proximity_map: Arc<ProximityMap>,
+}
+```
+
+Uses Hyper with QUIC/TLS transport.
+
+## Metrics
+
+### Payload Builder Metrics
+
+```rust
+pub struct XNetPayloadBuilderMetrics {
+    // Timing
+    pub build_payload_duration: HistogramVec,
+    pub validate_payload_duration: HistogramVec,
+    pub query_slice_duration: HistogramVec,
+    
+    // Counters
+    pub pull_attempt_count: IntCounterVec,
+    
+    // Distributions
+    pub slice_messages: Histogram,
+    pub slice_payload_size: Histogram,
+    
+    // Status
+    pub outstanding_queries: IntGauge,
+    
+    // Critical errors
+    pub critical_error_slice_count_bytes_failed: IntCounter,
+    pub critical_error_slice_count_bytes_invalid: IntCounter,
+}
+```
+
+**Key Metrics**:
+
+- `xnet_builder_build_payload_duration_seconds{status}`: Build time
+- `xnet_builder_pull_attempt_count{status}`: Fetch attempts
+- `xnet_builder_query_slice_duration_seconds{status,proximity}`: Fetch latency
+- `xnet_builder_slice_messages`: Messages per slice
+- `xnet_builder_slice_payload_size_bytes`: Slice sizes
+- `xnet_builder_outstanding_queries`: Active fetches
+
+## Performance Optimizations
+
+### Random Shuffling
+
+Fair slice selection:
+
+```rust
+let mut shuffled_stream_positions: Vec<_> = 
+    stream_positions.clone().into_iter().collect();
+self.random_shuffle(&mut shuffled_stream_positions);
+```
+
+Prevents starvation when byte limit is exceeded.
+
+### Header-First Strategy
+
+Prioritizes signals:
+
+```rust
+// Rationale:
+// - Signals are orders of magnitude smaller than messages
+// - Signals unblock reverse streams (garbage collection)
+// - Reject signals are equivalent to reject responses
+```
+
+### Byte Size Estimation
+
+Deterministic slice sizing:
+
+```rust
+pub fn certified_slice_count_bytes(
+    slice: &CertifiedStreamSlice
+) -> CertifiedSliceResult<usize> {
+    // Deterministic but approximate counting
+    // Matches consensus block size accounting
+}
+```
+
+Avoids expensive serialization during payload building.
+
+### Conservative Limits
+
+```rust
+const SLICE_BYTE_SIZE_MIN: usize = 1024; // 1 KB
+
+if bytes_left < self.slice_byte_size_min {
+    break; // Stop adding slices
+}
+```
+
+Leaves buffer for encoding overhead.
+
+## Error Handling
+
+### Slice Validation Results
+
+```rust
+enum SliceValidationResult {
+    Valid {
+        messages_end: StreamIndex,
+        signals_end: StreamIndex,
+        message_count: usize,
+        byte_size: usize,
+    },
+    Invalid(String),
+    Empty,
+}
+```
+
+### Error Recovery
+
+**Invalid Slices**: Dropped from pool, logged
+
+**Empty Slices**: Skipped (no new data)
+
+**Fetch Errors**: Retried in next refill cycle
+
+**Validation Errors**: Payload rejected, metrics updated
+
+## Security Considerations
+
+### Cryptographic Guarantees
+
+- **Authenticity**: Threshold signatures prevent forgery
+- **Integrity**: Merkle proofs ensure data hasn't been tampered
+- **Non-repudiation**: Signed by source subnet's threshold key
+
+### DOS Prevention
+
+- **Message limits**: Prevents unbounded growth
+- **Signal limits**: Prevents rejection flooding  
+- **Byte limits**: Respects block size constraints
+- **Validation timeouts**: Prevents slow validation attacks
+
+### Dishonest Subnet Detection
+
+```rust
+// Reject slices with too many signals
+if signals_end.get() - signals_begin.get() > 2 * MAX_SIGNALS {
+    log!("Too old reject signal in stream from {}", subnet_id);
+    return Invalid;
+}
+```
+
+## Testing
+
+Extensive test coverage:
+
+- **Unit tests**: Individual component validation
+- **Integration tests**: End-to-end payload building
+- **Mock implementations**: Deterministic testing
+- **Property tests**: Invariant verification
+
+## Source Code References
+
+- **Payload Builder**: `rs/xnet/payload_builder/src/lib.rs:1-1247+`
+- **Stream Types**: `rs/types/types/src/xnet.rs:1-663`
+- **XNet URI**: `rs/xnet/uri/src/lib.rs`
+- **Hyper Transport**: `rs/xnet/hyper/src/lib.rs`
+
+## Related Documentation
+
+- [P2P Layer](/architecture/p2p-layer) - Intra-subnet networking
+- [Boundary Nodes](/architecture/boundary-nodes) - External API gateway

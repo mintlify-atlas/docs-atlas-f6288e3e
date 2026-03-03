@@ -1,0 +1,590 @@
+---
+title: Boundary Nodes
+description: Architecture of the Internet Computer's boundary node infrastructure
+---
+
+## Overview
+
+Boundary nodes serve as the **HTTP gateway** between external clients and the Internet Computer network. They provide API access, load balancing, caching, and security for incoming requests while routing them to appropriate subnet replicas.
+
+## Architecture
+
+```
+Client Requests (HTTP/HTTPS)
+         |
+         v
+  +--------------+
+  | Boundary Node|
+  |  (ic_boundary)|
+  +--------------+
+         |
+         +--- TLS Verification
+         +--- Request Validation  
+         +--- Caching Layer
+         +--- Rate Limiting
+         +--- Subnet Routing
+         |
+         v
+  Replica Nodes (QUIC/TLS)
+```
+
+### Core Responsibilities
+
+1. **Protocol Translation**: HTTP/HTTPS to replica-native protocols
+2. **Request Routing**: Canister-to-subnet mapping
+3. **Load Balancing**: Health-aware replica selection
+4. **Caching**: Response caching for query calls
+5. **Security**: Rate limiting, DDoS protection, TLS termination
+6. **Observability**: Metrics, logging, request tracing
+
+## Key Components
+
+### 1. HTTP Server (`rs/boundary_node/ic_boundary/src/core.rs`)
+
+Axum-based HTTP server with multiple listening options:
+
+```rust
+// HTTP (plain)
+if let Some(v) = cli.listen.listen_http_port {
+    let srv = ServerBuilder::new(router.clone())
+        .listen_tcp(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), v))
+        .build()?;
+}
+
+// HTTPS (TLS)
+if cli.listen.listen_https_port.is_some() {
+    let srv = setup_https(router, server_opts, &cli, ...)?;
+}
+
+// Unix Socket (for local agents)
+if let Some(v) = &cli.listen.listen_http_unix_socket {
+    let srv = ServerBuilder::new(router.clone())
+        .listen_unix(v.clone())
+        .build()?;
+}
+```
+
+**Configuration**:
+```rust
+const MAX_REQUEST_BODY_SIZE: usize = 4 * MB; // 4 MB limit
+```
+
+### 2. Request Router (`rs/boundary_node/ic_boundary/src/routes.rs`)
+
+Implements routing logic for different request types:
+
+```rust
+pub struct ProxyRouter {
+    http_client: Arc<dyn HttpClient>,
+    routing_table: Arc<ArcSwapOption<Routes>>,
+    registry_snapshot: Arc<ArcSwapOption<RegistrySnapshot>>,
+    subnets_alive_threshold: f64,
+    nodes_per_subnet_alive_threshold: f64,
+}
+```
+
+#### Routing Traits
+
+**Proxy**: Forwards requests to replicas
+```rust
+#[async_trait]
+pub trait Proxy: Sync + Send {
+    async fn proxy(&self, request: Request<Body>, url: Url) 
+        -> Result<Response, ErrorCause>;
+}
+```
+
+**Lookup**: Canister and subnet resolution
+```rust
+pub trait Lookup: Sync + Send {
+    fn lookup_subnet_by_canister_id(&self, id: &CanisterId) 
+        -> Result<Arc<Subnet>, ErrorCause>;
+    fn lookup_subnet_by_id(&self, id: &SubnetId) 
+        -> Result<Arc<Subnet>, ErrorCause>;
+}
+```
+
+**Health**: Health status aggregation
+```rust
+pub trait Health: Sync + Send {
+    fn health(&self) -> ReplicaHealthStatus;
+}
+```
+
+**RootKey**: NNS root key retrieval
+```rust
+pub trait RootKey: Sync + Send {
+    fn root_key(&self) -> Option<Vec<u8>>;
+}
+```
+
+### 3. Middleware Stack
+
+Layered processing pipeline for all requests:
+
+#### Request Processing Order
+
+```rust
+let service_layers = ServiceBuilder::new()
+    .layer(middleware_bouncer)           // 1. DDoS protection
+    .layer(middleware_geoip)             // 2. Geo-location
+    .set_x_request_id(MakeRequestUuid)   // 3. Request ID
+    .layer(middleware_metrics)           // 4. Observability
+    .layer(load_shedder_system)          // 5. System load shedding
+    .layer(middleware_concurrency)       // 6. Concurrency limits
+    .layer(preprocess_request)           // 7. Request preprocessing
+    .layer(load_shedder_latency)         // 8. Latency-based shedding
+    .layer(validate_request)             // 9. Request validation
+    .layer(subnet_lookup)                // 10. Subnet routing
+    .layer(cache_middleware)             // 11. Response caching
+    .layer(retry_middleware);            // 12. Retry logic
+```
+
+#### Validation Middleware
+
+Ensures request integrity:
+
+```rust
+// Source: rs/boundary_node/ic_boundary/src/http/middleware/validate.rs
+pub async fn validate_request(request: Request, next: Next) 
+    -> Result<Response, ApiError> {
+    // Validate UUID format
+    // Verify request body size
+    // Check required headers
+    // Parse canister/subnet IDs
+}
+```
+
+#### Cache Middleware
+
+Caches query responses:
+
+```rust
+pub struct CacheState {
+    cache_size: usize,
+    cache: Arc<Cache<RequestContext, CachedResponse>>,
+}
+```
+
+Only caches:
+- Non-anonymous query calls
+- Successful responses (200 OK)
+- Responses under size limit
+
+#### Retry Middleware
+
+Handles transient failures:
+
+```rust
+pub struct RetryParams {
+    retry_count: usize,
+    retry_update_call: bool,
+    disable_latency_routing: bool,
+}
+```
+
+### 4. Registry Integration
+
+Maintains subnet and node information:
+
+```rust
+pub struct RegistrySnapshot {
+    pub nns_public_key: Vec<u8>,
+    pub subnets: Vec<Subnet>,
+    pub routing_table: BTreeMap<CanisterId, SubnetId>,
+}
+
+pub struct Subnet {
+    pub id: SubnetId,
+    pub subnet_type: SubnetType,
+    pub nodes: Vec<Node>,
+}
+```
+
+**Update Cycle**:
+1. Registry client polls local store (every 5 seconds)
+2. Snapshotter creates new snapshot from registry
+3. Health checker validates node availability
+4. Persister updates routing table
+5. Atomic swap of active snapshot
+
+### 5. Health Checking
+
+Continuous monitoring of replica health:
+
+```rust
+pub struct Checker {
+    http_client: Arc<dyn Client>,
+    timeout: Duration,
+}
+```
+
+**Health Algorithm**:
+```rust
+impl Health for ProxyRouter {
+    fn health(&self) -> ReplicaHealthStatus {
+        let healthy_subnets = subnets.filter(|subnet| {
+            let healthy_ratio = healthy_nodes / total_nodes;
+            healthy_ratio >= self.nodes_per_subnet_alive_threshold
+        }).count();
+        
+        let subnet_ratio = healthy_subnets / total_subnets;
+        if subnet_ratio >= self.subnets_alive_threshold {
+            ReplicaHealthStatus::Healthy
+        } else {
+            ReplicaHealthStatus::CertifiedStateBehind
+        }
+    }
+}
+```
+
+Default thresholds:
+- Subnets alive: **51%**
+- Nodes per subnet alive: **66.66%**
+
+### 6. TLS Configuration
+
+#### Client TLS (to Replicas)
+
+Registry-based certificate verification:
+
+```rust
+let tls_verifier: Arc<dyn ServerCertVerifier> = 
+    Arc::new(TlsVerifier::new(registry_snapshot.clone()));
+
+let tls_config_client = rustls::ClientConfig::builder()
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .dangerous()
+    .with_custom_certificate_verifier(tls_verifier)
+    .with_no_client_auth();
+```
+
+#### Server TLS (from Clients)
+
+ACME or static certificates:
+
+```rust
+fn setup_tls_resolver(cli: &Tls, tasks: &mut TaskManager) 
+    -> Result<Arc<dyn ResolvesServerCert>, Error> {
+    // Try static resolver first
+    match setup_tls_resolver_stub(cli) {
+        Ok(v) => return Ok(v),
+        Err(e) => warn!("Static resolver failed: {e}"),
+    }
+    
+    // Fall back to ACME ALPN-01
+    setup_tls_resolver_acme(cli, tasks)
+}
+```
+
+### 7. Rate Limiting
+
+Multiple rate limiting strategies:
+
+#### Per-IP Rate Limiting
+```rust
+if let Some(rl) = cli.rate_limiting.rate_limit_per_second_per_ip {
+    route = RateLimit::try_from(rl).unwrap()
+        .add_ip_rate_limiting(route);
+}
+```
+
+#### Per-Subnet Rate Limiting
+```rust
+if let Some(rl) = cli.rate_limiting.rate_limit_per_second_per_subnet {
+    route = RateLimit::try_from(rl).unwrap()
+        .add_subnet_rate_limiting(route);
+}
+```
+
+#### Generic Rate Limiting
+Canister-based or file-based limits:
+```rust
+pub struct GenericLimiter {
+    tti: Duration,
+    max_shards: usize,
+    poll_interval: Duration,
+    autoscale: bool,
+}
+```
+
+### 8. Load Shedding
+
+Protects against overload:
+
+#### System-Based Shedding
+```rust
+SystemLoadShedderLayer::new(
+    cli.shed_system.shed_system_ewma,
+    SystemLoadShedderOpts {
+        cpu: cli.shed_system.shed_system_cpu,
+        memory: cli.shed_system.shed_system_memory,
+        load_avg_1: cli.shed_system.shed_system_load_avg_1,
+        load_avg_5: cli.shed_system.shed_system_load_avg_5,
+        load_avg_15: cli.shed_system.shed_system_load_avg_15,
+    },
+    SystemInfo::new(),
+)
+```
+
+#### Latency-Based Shedding
+```rust
+ShardedLittleLoadShedderLayer::new(ShardedOptions {
+    extractor: RequestTypeExtractor,
+    ewma_alpha: cli.shed_latency.shed_sharded_ewma,
+    passthrough_count: cli.shed_latency.shed_sharded_passthrough,
+    latencies: cli.shed_latency.shed_sharded_latency,
+})
+```
+
+## API Endpoints
+
+### Canister Endpoints
+
+**Query** (read-only):
+```
+POST /api/v2/canister/{canister_id}/query
+POST /api/v3/canister/{canister_id}/query
+```
+
+**Call** (state-changing):
+```
+POST /api/v2/canister/{canister_id}/call
+POST /api/v3/canister/{canister_id}/call
+POST /api/v4/canister/{canister_id}/call
+```
+
+**Read State** (certificate verification):
+```
+POST /api/v2/canister/{canister_id}/read_state
+POST /api/v3/canister/{canister_id}/read_state
+```
+
+### Subnet Endpoints
+
+```
+POST /api/v2/subnet/{subnet_id}/read_state
+POST /api/v3/subnet/{subnet_id}/read_state
+```
+
+### System Endpoints
+
+**Status** (root key and health):
+```
+GET /api/v2/status
+```
+
+**Health** (availability check):
+```
+GET /health
+```
+
+## Security Features
+
+### 1. DDoS Protection
+
+Bouncer component for firewall integration:
+
+```rust
+pub struct Bouncer {
+    firewall_rules: Arc<RwLock<Rules>>,
+    blocked_ips: Arc<Cache<IpAddr, ()>>,
+}
+```
+
+### 2. Request Validation
+
+Strict input validation:
+- UUID format verification via regex
+- CBOR payload parsing and validation
+- Canister/subnet ID validation
+- Sender principal validation
+- Ingress expiry checks
+
+### 3. GeoIP Filtering
+
+Optional geo-location awareness:
+
+```rust
+pub struct GeoIp {
+    reader: Arc<Reader<Vec<u8>>>,
+}
+
+pub async fn middleware(
+    State(geoip): State<Arc<GeoIp>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Extract country, add to request extensions
+}
+```
+
+### 4. CORS Support
+
+Cross-origin resource sharing for web clients:
+
+```rust
+pub fn layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::any())
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(AllowHeaders::any())
+}
+```
+
+## Observability
+
+### Metrics
+
+Prometheus-compatible metrics:
+
+```rust
+pub struct HttpMetricParams {
+    registry: MetricsRegistry,
+    metric_name: String,
+    failed_requests_only: bool,
+    anonymization_salt: Arc<ArcSwapOption<Vec<u8>>>,
+    logs_broker: Option<Arc<Broker>>,
+}
+```
+
+**Key Metrics**:
+- Request counts by endpoint and status
+- Latency histograms (p50, p90, p99)
+- Cache hit/miss rates
+- Retry counts
+- Load shedding events
+- Active connections
+
+### Logging
+
+#### Request Logging
+```rust
+struct LogEntry {
+    timestamp: DateTime<Utc>,
+    request_id: String,
+    method: String,
+    path: String,
+    status_code: u16,
+    duration_ms: u64,
+    request_size: usize,
+    response_size: usize,
+    sender: Option<Principal>,
+    canister_id: Option<CanisterId>,
+}
+```
+
+#### Anonymization
+
+Optional log anonymization via canister:
+
+```rust
+pub struct AnonymizationSaltFetcher {
+    agent: Agent,
+    canister_id: Principal,
+    poll_interval: Duration,
+    salt: Arc<ArcSwapOption<Vec<u8>>>,
+}
+```
+
+### WebSocket Logging
+
+Real-time log streaming:
+
+```rust
+if cli.obs.obs_log_websocket {
+    let logs_broker = BrokerBuilder::new()
+        .with_buffer_size(cli.obs.obs_log_websocket_buffer)
+        .with_idle_timeout(cli.obs.obs_log_websocket_idle_timeout)
+        .with_max_subscribers(max_subscribers)
+        .with_max_topics(max_topics)
+        .build();
+}
+```
+
+Subscribe at:
+```
+WS /logs/canister/{canister_id}
+```
+
+## Performance Optimizations
+
+### HTTP Client Pool
+
+Multiple HTTP clients for load distribution:
+
+```rust
+if cli.network.network_http_client_count > 1 {
+    Arc::new(ReqwestClientLeastLoaded::new(
+        http_client_opts,
+        dns_resolver,
+        cli.network.network_http_client_count,
+        metrics_registry,
+    ))
+}
+```
+
+### DNS Resolution
+
+Registry-based DNS for replica addresses:
+
+```rust
+pub struct DnsResolver {
+    registry_snapshot: Arc<ArcSwapOption<RegistrySnapshot>>,
+}
+```
+
+Avoids external DNS dependencies.
+
+### TLS Session Resumption
+
+Large session cache for replica connections:
+
+```rust
+tls_config_client.resumption = 
+    rustls::client::Resumption::in_memory_sessions(
+        4096 * cli.network.network_http_client_count
+    );
+```
+
+### Connection Keep-Alive
+
+HTTP/2 and HTTP/1.1 keep-alive for persistent connections.
+
+## Deployment
+
+### Process Management
+
+Self-contained process group:
+
+```rust
+let pgid = getpgid(None)?;
+if pgid != Pid::this() {
+    setpgid(Pid::from_raw(0), Pid::from_raw(0))?;
+}
+```
+
+### Graceful Shutdown
+
+```rust
+select! {
+    _ = tokio::signal::ctrl_c() => {},
+    _ = sigterm.recv() => {},
+}
+
+tasks.stop().await;
+```
+
+All tasks complete in-flight requests before stopping.
+
+## Source Code References
+
+- **Core**: `rs/boundary_node/ic_boundary/src/core.rs:1-1131`
+- **Routing**: `rs/boundary_node/ic_boundary/src/routes.rs:1-795`
+- **HTTP Handlers**: `rs/boundary_node/ic_boundary/src/http/handlers.rs`
+- **Middleware**: `rs/boundary_node/ic_boundary/src/http/middleware/`
+
+## Related Documentation
+
+- [P2P Layer](/architecture/p2p-layer) - Intra-subnet networking
+- [XNet Messaging](/architecture/xnet-messaging) - Cross-subnet communication

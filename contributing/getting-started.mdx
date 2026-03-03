@@ -1,0 +1,174 @@
+---
+title: Getting Started
+description: Learn how to contribute to the Internet Computer Protocol implementation
+---
+
+Thank you for your interest in contributing to the implementation of the Internet Computer Protocol. This guide will help you get started with your contribution.
+
+## Before You Start
+
+Before contributing a feature or bug fix, please **reach out to the team first** to discuss feasibility and implementation strategies. You can reach out on the [DFINITY Forum](https://forum.dfinity.org/).
+
+<Info>
+This ensures your contribution aligns with the project's direction and prevents duplicate work.
+</Info>
+
+## Prerequisites
+
+### System Requirements
+
+- **Architecture**: x86-64 based system
+- **Memory**: Minimum 16 GB RAM/SWAP
+- **Disk Space**: At least 100 GB available
+- **OS**: Ubuntu 22.04 or newer
+- **Required Software**: [Podman](https://podman.io/getting-started/installation)
+
+### Required Reading
+
+Before contributing, please review:
+
+- [LICENSE](https://github.com/dfinity/ic/blob/master/LICENSE) - Apache 2.0 with some components under IC Community Source Licenses
+- [Contribution License Agreement (CLA)](https://github.com/dfinity/cla/blob/main/CLA.md) - You'll be prompted to sign this on your first PR
+
+## Development Environment Setup
+
+### Using the Dev Container
+
+The easiest way to build and test the IC is using the dev container:
+
+```bash
+ci/container/container-run.sh
+```
+
+Alternatively, you can use the [Dev Containers VS Code extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+
+### Building the Code
+
+Once in the dev container, you can build the project:
+
+<AccordionGroup>
+  <Accordion title="Build All IC-OS Images">
+    ```bash
+    ./ci/container/build-ic.sh -i
+    ```
+    All built artifacts will be in the top-level `artifacts/` directory.
+  </Accordion>
+
+  <Accordion title="Build Only Binaries and Canisters">
+    ```bash
+    ./ci/container/build-ic.sh -b -c
+    ```
+  </Accordion>
+
+  <Accordion title="Build Specific IC-OS Images">
+    ```bash
+    bazel build //ic-os/{setupos,hostos,guestos}/envs/<TARGET>/...
+    ```
+    
+    For example, to build GuestOS dev image:
+    ```bash
+    bazel build //ic-os/guestos/envs/dev/...
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Submitting Your Contribution
+
+### 1. Fork the Repository
+
+Fork the [IC repository](https://github.com/dfinity/ic). If you've forked it before, make sure your fork is up to date.
+
+### 2. Run Tests Locally
+
+To avoid long feedback loops, run tests locally before submitting:
+
+```bash
+# Check your code with linting
+./ci/scripts/rust-lint.sh
+
+# Or run individual commands
+cargo clippy
+
+# Build and test with Bazel (excluding system tests)
+bazel test //... --test_tag_filters=-system_test
+```
+
+<Warning>
+Don't run system tests unless you're on the DFINITY network, as they require special infrastructure.
+</Warning>
+
+### 3. File Restrictions
+
+For security reasons, external contributors cannot modify [certain files](https://github.com/dfinity/ic/blob/master/.github/repo_policies/EXTERNAL_CONTRIB_BLACKLIST). PRs that change these files will be automatically closed.
+
+### 4. Submit Your PR
+
+1. Create your changes in a feature branch
+2. Push to your fork
+3. Open a PR against the main repository
+4. Mark it as "Ready for Review"
+
+### 5. CI Pipeline
+
+<Info>
+For security reasons, CI doesn't run automatically for external contributors.
+</Info>
+
+The process:
+
+1. Your PR will be reviewed first
+2. A team member will manually trigger CI
+3. You'll receive a comment with a link to the CI run
+4. CI status will be reported back to your PR
+5. **New commits require manually re-running CI**
+
+## Network Nervous System (NNS)
+
+The Internet Computer is governed by a decentralized system called the Network Nervous System. Understanding the NNS is important for contributors:
+
+- [Understanding the NNS](https://medium.com/dfinity/understanding-the-internet-computers-network-nervous-system-neurons-and-icp-utility-tokens-730dab65cae8)
+- [NNS Proposals](https://github.com/dfinity/nns-proposals)
+
+## Who Should Use This Code?
+
+<CardGroup cols={2}>
+  <Card title="App Developers" icon="code">
+    Use the [Canister SDK](https://sdk.dfinity.org/docs/quickstart/quickstart-intro.html) instead. It's optimized for building apps with a local replica.
+  </Card>
+  
+  <Card title="Protocol Researchers" icon="book">
+    Check out the [Consensus Protocol](https://medium.com/dfinity/achieving-consensus-on-the-internet-computer-ee9fbfbafcbc) and [IC Interface Specification](https://sdk.dfinity.org/docs/interface-spec/index.html).
+  </Card>
+  
+  <Card title="Node Providers" icon="server">
+    Visit the [Internet Computer Wiki for Node Providers](https://wiki.internetcomputer.org/wiki/Internet_Computer_wiki#For_Node_Providers).
+  </Card>
+  
+  <Card title="Systems Engineers" icon="wrench">
+    You're in the right place! This codebase is for security engineers, systems engineers, and cryptographers.
+  </Card>
+</CardGroup>
+
+## Getting Help
+
+If you have questions or need help:
+
+- Post on the [DFINITY Forum](https://forum.dfinity.org/)
+- Check the [R&D Documentation](https://medium.com/dfinity/a-technical-overview-of-the-internet-computer-f57c62abc20f)
+- Review existing [GitHub issues](https://github.com/dfinity/ic/issues)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Code Structure" icon="folder-tree" href="/contributing/code-structure">
+    Understand the repository organization
+  </Card>
+  
+  <Card title="Rust Dependencies" icon="rust" href="/contributing/rust-dependencies">
+    Learn the dependency management policy
+  </Card>
+  
+  <Card title="Testing" icon="flask" href="/contributing/testing">
+    Explore the testing infrastructure
+  </Card>
+</CardGroup>

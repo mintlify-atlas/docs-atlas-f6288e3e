@@ -1,80 +1,387 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quick Start'
+description: 'Build the Internet Computer replica locally and start exploring the codebase'
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
+This guide will help you build the Internet Computer replica from source and start exploring the protocol implementation.
 
-### Step 1: Set up your local environment
+<Warning>
+**Before You Begin**
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+This guide is for systems engineers, security researchers, and cryptographers who want to understand the low-level implementation. If you want to build applications on ICP, use the [Canister SDK](https://sdk.dfinity.org/docs/quickstart/quickstart-intro.html) instead.
+</Warning>
 
-### Step 2: Deploy your changes
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+### System Requirements
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Architecture" icon="microchip">
+    x86-64 based system (64-bit required)
+  </Card>
+  
+  <Card title="Memory" icon="memory">
+    Minimum 16 GB RAM/SWAP
+  </Card>
+  
+  <Card title="Storage" icon="hard-drive">
+    100 GB available disk space
+  </Card>
+  
+  <Card title="Operating System" icon="ubuntu">
+    Ubuntu 22.04 or newer
+  </Card>
 </CardGroup>
 
+### Required Software
+
+<Steps>
+  <Step title="Install Rust">
+    The Internet Computer is written in Rust. Install the latest stable Rust toolchain:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    source $HOME/.cargo/env
+    ```
+  </Step>
+  
+  <Step title="Install Podman">
+    Podman is required for building IC-OS images:
+    
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y podman
+    ```
+    
+    See [Podman installation guide](https://podman.io/getting-started/installation) for other systems.
+  </Step>
+  
+  <Step title="Install Additional Dependencies">
+    ```bash
+    sudo apt-get install -y build-essential cmake curl python3
+    ```
+  </Step>
+</Steps>
+
+## Clone the Repository
+
+Get the latest Internet Computer source code:
+
+```bash
+git clone https://github.com/dfinity/ic.git
+cd ic
+```
+
+<Tip>
+The repository is quite large (several GB). The initial clone may take some time depending on your connection.
+</Tip>
+
+## Building the Code
+
+### Option 1: Build Just the Replica Binary
+
+This is the quickest way to get started and verify the code compiles:
+
+<Steps>
+  <Step title="Navigate to Rust Directory">
+    ```bash
+    cd rs
+    ```
+  </Step>
+  
+  <Step title="Build the Replica">
+    ```bash
+    cargo build --release --bin replica
+    ```
+    
+    <Note>
+    **Build Time**: The first build can take 30-60 minutes depending on your hardware. Subsequent builds will be much faster thanks to incremental compilation.
+    </Note>
+  </Step>
+  
+  <Step title="Verify the Build">
+    The replica binary will be located at:
+    
+    ```bash
+    ls -lh target/release/replica
+    ```
+    
+    You should see a binary of approximately 100-200 MB.
+  </Step>
+</Steps>
+
+### Option 2: Build All Binaries and Canisters
+
+For a more complete build including NNS canisters and other components:
+
+```bash
+# From the repository root
+./ci/container/build-ic.sh -b -c
+```
+
+<Info>
+**What This Does**:
+- `-b` flag: Builds all binaries
+- `-c` flag: Builds all canisters
+- Uses a containerized environment for reproducibility
+- All artifacts will be in the top-level `artifacts/` directory
+</Info>
+
+### Option 3: Build Complete IC-OS Images
+
+To build bootable operating system images that run on actual IC nodes:
+
+```bash
+# Build all IC-OS images (SetupOS, HostOS, GuestOS)
+./ci/container/build-ic.sh -i
+```
+
+<Warning>
+This is the most resource-intensive option and can take several hours. Only do this if you need to test the complete node software stack.
+</Warning>
+
+#### Build Specific IC-OS Components
+
+You can also build individual OS images using Bazel:
+
+<CodeGroup>
+```bash GuestOS Development Image
+bazel build //ic-os/guestos/envs/dev/...
+```
+
+```bash HostOS Production Image
+bazel build //ic-os/hostos/envs/prod/...
+```
+
+```bash SetupOS Development Image
+bazel build //ic-os/setupos/envs/dev/...
+```
+</CodeGroup>
+
+<Tip>
+**Development vs Production Images**
+
+- **dev images**: Console access enabled (username/password: `root`/`root`)
+- **prod images**: Console disabled for security
+</Tip>
+
+Built images are located in:
+```plaintext
+bazel-bin/ic-os/{setupos,hostos,guestos}/envs/<TARGET>/
+```
+
+## Exploring the Codebase
+
+### Repository Structure
+
+<AccordionGroup>
+  <Accordion title="rs/ - Rust Implementation" icon="rust">
+    The core protocol implementation in Rust:
+    
+    - `rs/replica/` - Main replica binary and setup
+    - `rs/consensus/` - Consensus protocol
+    - `rs/execution_environment/` - Canister execution
+    - `rs/messaging/` - Message routing
+    - `rs/crypto/` - Cryptographic primitives
+    - `rs/nns/` - Network Nervous System canisters
+    - `rs/types/` - Core type definitions
+  </Accordion>
+  
+  <Accordion title="ic-os/ - Operating Systems" icon="ubuntu">
+    The operating system images that run on IC nodes:
+    
+    - `ic-os/guestos/` - The OS running the replica
+    - `ic-os/hostos/` - The host OS managing the VM
+    - `ic-os/setupos/` - Initial setup and installation
+  </Accordion>
+  
+  <Accordion title="packages/ - Packages" icon="box">
+    Standalone packages and utilities used by the IC
+  </Accordion>
+</AccordionGroup>
+
+### Key Files to Read
+
+<CardGroup cols={2}>
+  <Card title="Main Entry Point" icon="door-open">
+    **rs/replica/bin/replica/main.rs**
+    
+    The replica's main function - see how the entire system bootstraps
+  </Card>
+  
+  <Card title="Consensus" icon="handshake">
+    **rs/consensus/src/consensus.rs**
+    
+    The consensus engine coordinating all subcomponents
+  </Card>
+  
+  <Card title="Canister Management" icon="cube">
+    **rs/execution_environment/src/canister_manager.rs**
+    
+    How canisters are created, upgraded, and managed
+  </Card>
+  
+  <Card title="Root README" icon="book">
+    **README.adoc**
+    
+    Comprehensive overview and additional resources
+  </Card>
+</CardGroup>
+
+## Running Tests
+
+The codebase includes extensive tests. Here are some useful test commands:
+
+<CodeGroup>
+```bash Unit Tests
+# Run tests for a specific crate
+cd rs/consensus
+cargo test
+```
+
+```bash Integration Tests
+# Run consensus integration tests
+cd rs
+cargo test --test integration multiple_nodes_are_live -- --nocapture
+```
+
+```bash With Debug Output
+# Run with detailed logging
+RUST_LOG=Debug cargo test --test integration multiple_nodes_are_live -- --nocapture
+```
+
+```bash Specific Test Pattern
+# Run tests matching a pattern
+cargo test --all -- consensus
+```
+</CodeGroup>
+
+### Consensus Test Framework
+
+The consensus tests include a sophisticated simulation framework:
+
+```bash
+# Run with custom parameters
+NUM_NODES=6 NUM_ROUNDS=100 RUST_LOG=Debug \
+  cargo test --test integration multiple_nodes_are_live -- --nocapture
+```
+
+<Info>
+**Environment Variables for Consensus Tests**:
+
+- `NUM_NODES`: Number of nodes in simulation (default: 10)
+- `NUM_ROUNDS`: Number of consensus rounds to run (default: random 10-100)
+- `RANDOM_SEED`: Seed for reproducible randomness (default: 0)
+- `MAX_DELTA`: Maximum network latency in ms (default: 1000)
+</Info>
+
+## Verifying Releases
+
+The Internet Computer provides reproducible builds. You can verify that any deployed version matches the source code:
+
+<Steps>
+  <Step title="Install Prerequisites">
+    ```bash
+    sudo apt install curl python3
+    ```
+  </Step>
+  
+  <Step title="Verify a Proposal">
+    ```bash
+    # Replace {COMMIT_ID} with the actual git commit hash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -p <proposal_number>
+    ```
+  </Step>
+  
+  <Step title="Or Verify by Commit">
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/dfinity/ic/{COMMIT_ID}/ci/scripts/repro-check | \
+        python3 - -c {COMMIT_ID}
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+**Always Use Versioned URLs**
+
+Replace `{COMMIT_ID}` with the actual commit hash instead of using `master` to ensure compatibility between the verification script and the build system.
+</Warning>
+
+### Verify Specific Components
+
+```bash
+# Verify only GuestOS
+python3 - -c {COMMIT_ID} --guestos
+
+# Verify only HostOS  
+python3 - -c {COMMIT_ID} --hostos
+
+# Verify only SetupOS
+python3 - -c {COMMIT_ID} --setupos
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the system's layered architecture
+  </Card>
+  
+  <Card title="Consensus Protocol" icon="handshake" href="/concepts/consensus">
+    Dive deep into how consensus works
+  </Card>
+  
+  <Card title="Canisters" icon="cube" href="/concepts/canisters">
+    Learn about canister smart contracts
+  </Card>
+  
+  <Card title="Contributing" icon="code-pull-request" href="https://github.com/dfinity/ic/blob/master/CONTRIBUTING.md">
+    Contribute to the Internet Computer
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Build fails with out of memory error">
+    Try building with fewer parallel jobs:
+    
+    ```bash
+    cargo build --release --bin replica -j 4
+    ```
+    
+    Or increase your swap space if you have less than 16 GB RAM.
+  </Accordion>
+  
+  <Accordion title="Can't find certain dependencies">
+    Make sure you've run the build from within the containerized environment:
+    
+    ```bash
+    ./ci/container/container-run.sh
+    ```
+    
+    This provides a consistent build environment with all dependencies.
+  </Accordion>
+  
+  <Accordion title="Bazel build issues">
+    The repository includes Bazel configuration. If you encounter Bazel-specific issues, ensure you have Bazel installed:
+    
+    ```bash
+    # Install Bazel
+    # See https://bazel.build/install
+    ```
+  </Accordion>
+  
+  <Accordion title="Tests are failing">
+    Some tests may require specific environment setup. Check the test output for hints, and ensure you're running from the correct directory (usually `rs/` for Rust tests).
+  </Accordion>
+</AccordionGroup>
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+For detailed contribution guidelines and security reporting, see:
+- [CONTRIBUTING.md](https://github.com/dfinity/ic/blob/master/CONTRIBUTING.md)
+- [SECURITY.md](https://github.com/dfinity/ic/blob/master/SECURITY.md)
 </Note>

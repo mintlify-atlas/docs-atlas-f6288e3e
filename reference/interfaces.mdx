@@ -1,0 +1,481 @@
+---
+title: Interfaces Reference
+description: Public trait definitions for Internet Computer replica components
+---
+
+The `rs/interfaces/` directory contains trait definitions that establish public APIs between replica components. These interfaces enable loose coupling and modular architecture.
+
+## Design Philosophy
+
+The interfaces crate follows these principles:
+
+1. **Interface Segregation** - Each interface focuses on a single responsibility
+2. **Dependency Inversion** - Components depend on abstractions, not implementations
+3. **Clean Boundaries** - Clear separation between component interfaces
+4. **Associated Types** - Avoid direct dependencies on implementation types
+
+## Core Interfaces
+
+### ic-interfaces
+
+Main interface definitions for replica components.
+
+**Location**: `rs/interfaces/`
+
+**Modules**:
+
+```rust
+pub mod batch_payload;              // Batch construction
+pub mod canister_http;              // HTTP outcalls
+pub mod certification;              // State certification
+pub mod consensus;                  // Consensus protocol
+pub mod consensus_pool;             // Consensus artifact pool
+pub mod crypto;                     // Cryptographic operations
+pub mod dkg;                        // Distributed key generation
+pub mod execution_environment;      // Canister execution
+pub mod idkg;                       // Interactive DKG
+pub mod ingress_manager;            // Ingress handling
+pub mod ingress_pool;               // Ingress message pool
+pub mod messaging;                  // Message routing
+pub mod p2p;                        // Peer-to-peer networking
+pub mod query_stats;                // Query statistics
+pub mod self_validating_payload;    // Self-validating payloads
+pub mod time_source;                // Time synchronization
+pub mod validation;                 // Payload validation
+pub mod vetkd;                      // VetKD protocol
+```
+
+### Crypto Interfaces
+
+**Location**: `rs/interfaces/src/crypto/`
+
+Defines traits for cryptographic operations:
+
+```rust
+// Basic signature operations
+pub trait BasicSigner {
+    fn sign_basic(
+        &self,
+        message: &[u8],
+        signer: NodeId,
+        registry_version: RegistryVersion,
+    ) -> Result<BasicSignature, CryptoError>;
+}
+
+pub trait BasicSigVerifier {
+    fn verify_basic_sig(
+        &self,
+        signature: &BasicSignature,
+        message: &[u8],
+        signer: NodeId,
+        registry_version: RegistryVersion,
+    ) -> Result<(), CryptoError>;
+}
+```
+
+**Crypto Submodules**:
+
+#### Threshold Signatures
+
+**Location**: `rs/interfaces/src/crypto/sign/threshold_sig/`
+
+```rust
+pub trait ThresholdSigner {
+    fn sign_threshold(
+        &self,
+        message: &[u8],
+        dkg_id: NiDkgId,
+    ) -> Result<ThresholdSignatureShare, CryptoError>;
+}
+
+pub trait ThresholdSigVerifier {
+    fn verify_threshold_sig_share(
+        &self,
+        share: &ThresholdSignatureShare,
+        message: &[u8],
+        dkg_id: NiDkgId,
+        signer: NodeId,
+    ) -> Result<(), CryptoError>;
+    
+    fn combine_threshold_sig_shares(
+        &self,
+        shares: &[ThresholdSignatureShare],
+        message: &[u8],
+    ) -> Result<ThresholdSignature, CryptoError>;
+}
+```
+
+#### Non-Interactive DKG
+
+**Location**: `rs/interfaces/src/crypto/sign/threshold_sig/ni_dkg.rs`
+
+```rust
+pub trait NiDkgAlgorithm {
+    fn create_dealing(
+        &self,
+        config: &NiDkgConfig,
+    ) -> Result<NiDkgDealing, DkgCreateDealingError>;
+    
+    fn verify_dealing(
+        &self,
+        config: &NiDkgConfig,
+        dealer: NodeId,
+        dealing: &NiDkgDealing,
+    ) -> Result<(), DkgVerifyDealingError>;
+    
+    fn create_transcript(
+        &self,
+        config: &NiDkgConfig,
+        verified_dealings: &BTreeMap<NodeId, NiDkgDealing>,
+    ) -> Result<NiDkgTranscript, DkgCreateTranscriptError>;
+    
+    fn load_transcript(
+        &self,
+        transcript: &NiDkgTranscript,
+    ) -> Result<(), DkgLoadTranscriptError>;
+}
+```
+
+#### Canister Threshold Signatures
+
+**Location**: `rs/interfaces/src/crypto/sign/canister_threshold_sig.rs`
+
+Interfaces for threshold ECDSA and Schnorr signatures:
+
+```rust
+pub trait IDkgProtocol {
+    fn create_dealing(
+        &self,
+        params: &IDkgTranscriptParams,
+    ) -> Result<IDkgDealing, IDkgCreateDealingError>;
+    
+    fn verify_dealing_public(
+        &self,
+        params: &IDkgTranscriptParams,
+        dealer: NodeId,
+        dealing: &IDkgDealing,
+    ) -> Result<(), IDkgVerifyDealingError>;
+    
+    fn create_transcript(
+        &self,
+        params: &IDkgTranscriptParams,
+        dealings: &BatchSignedIDkgDealings,
+    ) -> Result<IDkgTranscript, IDkgCreateTranscriptError>;
+}
+
+pub trait ThresholdEcdsaSigner {
+    fn sign_share(
+        &self,
+        inputs: &ThresholdEcdsaSigInputs,
+    ) -> Result<ThresholdEcdsaSigShare, ThresholdEcdsaSignShareError>;
+}
+```
+
+### Execution Environment
+
+**Location**: `rs/interfaces/src/execution_environment.rs`
+
+```rust
+pub trait ExecutionEnvironment: Send + Sync {
+    fn execute_canister_message(
+        &self,
+        canister_state: CanisterState,
+        instruction_limit: NumInstructions,
+        message: CanisterInputMessage,
+        time: Time,
+        network_topology: Arc<NetworkTopology>,
+        subnet_available_memory: SubnetAvailableMemory,
+    ) -> ExecuteMessageResult;
+    
+    fn execute_canister_heartbeat(
+        &self,
+        canister_state: CanisterState,
+        instruction_limit: NumInstructions,
+        network_topology: Arc<NetworkTopology>,
+        time: Time,
+        subnet_available_memory: SubnetAvailableMemory,
+    ) -> (CanisterState, NumInstructions, HypervisorResult<NumBytes>);
+}
+```
+
+**Error Module**: `rs/interfaces/src/execution_environment/errors.rs`
+
+Defines execution-related errors.
+
+### Messaging
+
+**Location**: `rs/interfaces/src/messaging.rs`
+
+```rust
+pub trait MessageRouting: Send + Sync {
+    fn deliver_batch(
+        &self,
+        batch: Batch,
+    ) -> Result<(), MessageRoutingError>;
+    
+    fn expected_batch_height(&self) -> Height;
+}
+
+pub trait XNetPayloadBuilder: Send + Sync {
+    fn get_xnet_payload(
+        &self,
+        validation_context: &ValidationContext,
+        past_payloads: &[&XNetPayload],
+        byte_limit: NumBytes,
+    ) -> XNetPayload;
+}
+```
+
+### Consensus
+
+**Location**: `rs/interfaces/src/consensus.rs`
+
+```rust
+pub trait Consensus: Send + Sync {
+    fn on_state_change(
+        &self,
+        pool: &dyn ConsensusPool,
+    ) -> ChangeSet;
+}
+
+pub trait PayloadBuilder: Send + Sync {
+    fn get_payload(
+        &self,
+        height: Height,
+        past_payloads: &[&PastPayload],
+        context: &ValidationContext,
+        subnet_records: &SubnetRecords,
+    ) -> Result<BatchPayload, PayloadBuilderError>;
+}
+```
+
+**Error Module**: `rs/interfaces/src/consensus/errors.rs`
+
+### Consensus Pool
+
+**Location**: `rs/interfaces/src/consensus_pool.rs`
+
+Defines the consensus artifact pool interface:
+
+```rust
+pub trait ConsensusPool: Send + Sync {
+    fn validated(&self) -> &dyn ConsensusPoolSection;
+    fn unvalidated(&self) -> &dyn ConsensusPoolSection;
+}
+
+pub trait ConsensusPoolSection {
+    fn get(&self, msg_id: &ConsensusMessageId) -> Option<ConsensusMessage>;
+    fn get_all_by_type(&self, artifact_type: ConsensusMessageType) 
+        -> Box<dyn Iterator<Item = ConsensusMessage>>;
+}
+```
+
+### P2P Networking
+
+**Location**: `rs/interfaces/src/p2p/`
+
+#### Artifact Manager
+
+**Location**: `rs/interfaces/src/p2p/artifact_manager.rs`
+
+```rust
+pub trait ArtifactManager: Send + Sync {
+    fn on_artifact(
+        &self,
+        artifact: Artifact,
+        peer_id: NodeId,
+    ) -> Result<(), ArtifactManagerError>;
+    
+    fn has_artifacts(&self, msg_ids: &[ArtifactId]) -> Vec<bool>;
+    
+    fn get_priority_function(&self) -> PriorityFn;
+}
+```
+
+#### State Sync
+
+**Location**: `rs/interfaces/src/p2p/state_sync.rs`
+
+```rust
+pub trait StateSyncClient: Send + Sync {
+    fn available_states(&self) -> Vec<(Height, CryptoHash)>;
+    
+    fn start_state_sync(
+        &self,
+        height: Height,
+        hash: CryptoHash,
+    ) -> Result<(), StateSyncError>;
+    
+    fn cancel_if_running(&self);
+}
+```
+
+### DKG Interface
+
+**Location**: `rs/interfaces/src/dkg.rs`
+
+```rust
+pub trait Dkg: Send + Sync {
+    fn on_state_change(
+        &self,
+        dkg_pool: &dyn DkgPool,
+    ) -> ChangeSet;
+}
+```
+
+### IDKG Interface
+
+**Location**: `rs/interfaces/src/idkg.rs`
+
+Interactive DKG for canister threshold signatures.
+
+### Ingress Management
+
+**Location**: `rs/interfaces/src/ingress_manager.rs`
+
+```rust
+pub trait IngressManager: Send + Sync {
+    fn on_state_change(
+        &self,
+        pool: &dyn IngressPool,
+    ) -> ChangeSet;
+}
+```
+
+**Pool Interface**: `rs/interfaces/src/ingress_pool.rs`
+
+### Time Source
+
+**Location**: `rs/interfaces/src/time_source.rs`
+
+```rust
+pub trait TimeSource: Send + Sync {
+    fn get_relative_time(&self) -> Time;
+}
+```
+
+## Registry Interfaces
+
+### ic-interfaces-registry
+
+Registry client trait definitions.
+
+**Location**: `rs/interfaces/registry/`
+
+```rust
+pub trait RegistryClient: Send + Sync {
+    fn get_versioned_value(
+        &self,
+        key: &str,
+        version: RegistryVersion,
+    ) -> RegistryClientVersionedResult<Vec<u8>>;
+    
+    fn get_key_family(
+        &self,
+        key_prefix: &str,
+        version: RegistryVersion,
+    ) -> Result<Vec<String>, RegistryClientError>;
+    
+    fn get_latest_version(&self) -> RegistryVersion;
+    
+    fn get_version_timestamp(
+        &self,
+        registry_version: RegistryVersion,
+    ) -> Option<Time>;
+}
+
+pub trait RegistryDataProvider: Send + Sync {
+    fn get_updates_since(
+        &self,
+        version: RegistryVersion,
+    ) -> Result<Vec<RegistryRecord>, RegistryDataProviderError>;
+}
+```
+
+**Constants**:
+
+```rust
+pub const ZERO_REGISTRY_VERSION: RegistryVersion = RegistryVersion::new(0);
+pub const POLLING_PERIOD: Duration = Duration::from_secs(5);
+```
+
+### Registry Invariants
+
+The registry client interface guarantees:
+
+1. **Fully Available Versions**: All keys are available at `get_latest_version()`
+2. **Known Zero State**: Registry version 0 is always empty
+3. **Deterministic Queries**: Repeated queries return identical results
+
+## State Manager Interfaces
+
+### ic-interfaces-state-manager
+
+**Location**: `rs/interfaces/state_manager/`
+
+Defines state management interfaces (trait details depend on the actual implementation).
+
+## Mock Implementations
+
+Several crates provide mock implementations for testing:
+
+- **ic-interfaces-mocks** (`rs/interfaces/mocks/`) - Mock implementations of core interfaces
+- **ic-interfaces-registry-mocks** (`rs/interfaces/registry/mocks/`) - Registry mocks
+- **ic-interfaces-state-manager-mocks** (`rs/interfaces/state-manager/mocks/`) - State manager mocks
+
+## Testing with Interfaces
+
+Interfaces enable dependency injection and testability:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use ic_interfaces::crypto::BasicSigner;
+    use ic_interfaces_mocks::crypto::MockCrypto;
+    
+    #[test]
+    fn test_with_mock() {
+        let mock_crypto = MockCrypto::new();
+        // Configure mock expectations
+        // Test component using trait
+    }
+}
+```
+
+## Associated Types Pattern
+
+Many interfaces use associated types to avoid coupling:
+
+```rust
+pub trait Pool {
+    type Message;
+    type Artifact;
+    
+    fn get(&self, id: &MessageId) -> Option<Self::Message>;
+}
+```
+
+This approach is documented in the source as:
+
+> "Several traits in this package use associated types to avoid direct dependency on ReplicatedState. This results in cleaner dependency graph and speeds up incremental compilation."
+
+## Dependencies
+
+The interfaces crate has minimal dependencies:
+
+- `ic-types` - Type definitions
+- `ic-base-types` - Basic types
+- `ic-error-types` - Error types
+- `tower` - Service trait abstractions
+- `thiserror` - Error derive macros
+
+## Related Documentation
+
+- [Types Reference](/reference/types) - Type definitions used in interfaces
+- [Registry Reference](/reference/registry) - Registry implementation details
+- [Crates Overview](/reference/crates-overview) - Overall architecture
+
+## See Also
+
+- Source: `rs/interfaces/src/lib.rs`
+- Source: `rs/interfaces/registry/src/lib.rs`

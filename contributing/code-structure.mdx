@@ -1,0 +1,313 @@
+---
+title: Code Structure
+description: Understanding the Internet Computer repository organization
+---
+
+The Internet Computer repository is organized as a monorepo containing all components needed to build and run the IC protocol implementation.
+
+## Repository Overview
+
+The repository contains several major directories, each serving a specific purpose:
+
+```
+ic/
+├── rs/              # Rust implementation of the replica and core services
+├── ic-os/           # Operating system images (SetupOS, HostOS, GuestOS)
+├── packages/        # Standalone packages and utilities
+├── ci/              # Continuous integration scripts and configuration
+├── bazel/           # Bazel build system configuration
+└── third_party/     # Third-party dependencies
+```
+
+## Core Directories
+
+### rs/ - Rust Implementation
+
+The `rs/` directory contains the Rust implementation of the Internet Computer replica (the core client software) and associated services. This is the heart of the IC protocol implementation.
+
+<AccordionGroup>
+  <Accordion title="Key Subsystems in rs/">
+    <ResponseField name="consensus" type="directory">
+      Consensus protocol implementation including DKG, IDKG, and VetKD
+      - `rs/consensus/` - Main consensus logic
+      - `rs/consensus/certification/` - Subnet certification
+      - `rs/consensus/dkg/` - Distributed key generation
+      - `rs/consensus/idkg/` - Interactive DKG
+    </ResponseField>
+
+    <ResponseField name="execution_environment" type="directory">
+      WebAssembly canister execution environment
+      - Canister lifecycle management
+      - Message routing and execution
+      - System API implementation
+    </ResponseField>
+
+    <ResponseField name="crypto" type="directory">
+      Cryptographic primitives and protocols
+      - Basic signatures (ECDSA, Ed25519, RSA)
+      - Threshold signatures (BLS12-381)
+      - Canister threshold signatures
+      - TLS and node key management
+    </ResponseField>
+
+    <ResponseField name="registry" type="directory">
+      Network registry implementation
+      - Topology management
+      - Subnet configuration
+      - Node registry
+    </ResponseField>
+
+    <ResponseField name="state_manager" type="directory">
+      Replicated state management and checkpointing
+    </ResponseField>
+
+    <ResponseField name="p2p" type="directory">
+      Peer-to-peer networking layer
+      - Artifact management and download
+      - QUIC transport
+      - State sync
+    </ResponseField>
+
+    <ResponseField name="nervous_system" type="directory">
+      Network Nervous System (NNS) governance components
+      - Governance canisters
+      - Proposal management
+      - Neuron management
+    </ResponseField>
+
+    <ResponseField name="bitcoin" type="directory">
+      Bitcoin integration
+      - Bitcoin adapter
+      - ckBTC minter canister
+      - Bitcoin consensus integration
+    </ResponseField>
+
+    <ResponseField name="ethereum" type="directory">
+      Ethereum integration
+      - ckETH minter canister
+      - Ledger suite orchestrator
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="Testing Infrastructure in rs/">
+    <ResponseField name="tests" type="directory">
+      System tests and integration tests
+      - `rs/tests/consensus/` - Consensus tests
+      - `rs/tests/execution/` - Execution environment tests
+      - `rs/tests/networking/` - Network tests
+      - `rs/tests/driver/` - Test driver infrastructure
+    </ResponseField>
+
+    <ResponseField name="test_utilities" type="directory">
+      Testing utilities and mocks
+      - Artifact pool utilities
+      - Consensus test utilities
+      - Mock implementations
+    </ResponseField>
+
+    <ResponseField name="state_machine_tests" type="directory">
+      State machine-based testing framework
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="Boundary Nodes in rs/">
+    <ResponseField name="boundary_node" type="directory">
+      Boundary node implementation
+      - `rs/boundary_node/ic_boundary/` - Main boundary node service
+      - `rs/boundary_node/rate_limits/` - Rate limiting
+      - `rs/boundary_node/salt_sharing/` - Salt sharing protocol
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="Ledger and Financial Integration">
+    <ResponseField name="ledger_suite" type="directory">
+      Ledger implementations
+      - `rs/ledger_suite/icp/` - ICP ledger
+      - `rs/ledger_suite/icrc1/` - ICRC-1 token standard
+    </ResponseField>
+
+    <ResponseField name="rosetta-api" type="directory">
+      Rosetta API implementation for ICP and ICRC-1
+    </ResponseField>
+
+    <ResponseField name="nns" type="directory">
+      NNS canisters
+      - Governance
+      - Cycles Minting Canister (CMC)
+      - Ledger
+      - SNS-WASM
+    </ResponseField>
+  </Accordion>
+</AccordionGroup>
+
+### ic-os/ - Operating Systems
+
+IC-OS contains the operating system images that run on Internet Computer nodes. These are minimal, security-hardened systems.
+
+<CodeGroup>
+```text Structure
+ic-os/
+├── setupos/      # Initial boot and installation OS
+├── hostos/       # Host operating system
+├── guestos/      # Guest OS running the replica
+├── components/   # Shared components across all OS variants
+└── bootloader/   # Boot loader configuration
+```
+</CodeGroup>
+
+<CardGroup cols={3}>
+  <Card title="SetupOS" icon="circle-play">
+    Responsible for booting a new replica node and installing HostOS and GuestOS.
+  </Card>
+  
+  <Card title="HostOS" icon="server">
+    Runs on the host machine. Launches and manages the GuestOS virtual machine. Intentionally limited in capabilities.
+  </Card>
+  
+  <Card title="GuestOS" icon="microchip">
+    Runs inside a VM on HostOS. Executes the core IC protocol and replica software.
+  </Card>
+</CardGroup>
+
+<Info>
+IC-OS images are built as Docker images first, then transformed into bootable bare-metal or virtual-metal images. See the [IC-OS README](https://github.com/dfinity/ic/blob/master/ic-os/README.adoc) for details.
+</Info>
+
+#### Image Variants
+
+Each OS has multiple build targets:
+
+- **prod** - Production images (no console access)
+- **dev** - Development images (console access enabled, username/password: `root`/`root`)
+- **dev-malicious** (GuestOS only) - For testing malicious behavior
+- **recovery** (GuestOS only) - For subnet recovery
+
+### packages/ - Standalone Packages
+
+The `packages/` directory contains standalone Rust packages that can be used independently:
+
+```text
+packages/
+├── canlog/                        # Canister logging utilities
+├── ic-ed25519/                    # Ed25519 signature implementation
+├── ic-ethereum-types/             # Ethereum type definitions
+├── ic-secp256k1/                  # secp256k1 implementation
+├── ic-secp256r1/                  # secp256r1 implementation
+├── ic-signature-verification/     # Signature verification utilities
+├── icrc-ledger-types/             # ICRC ledger type definitions
+└── pocket-ic/                     # PocketIC local testing framework
+```
+
+These packages are often published to crates.io for use by external developers.
+
+### ci/ - Continuous Integration
+
+Contains all CI/CD infrastructure:
+
+```text
+ci/
+├── container/       # Docker container definitions for builds
+├── scripts/         # Build and test automation scripts
+├── actions/         # GitHub Actions workflows
+└── src/             # CI tooling source code
+```
+
+Key scripts:
+
+- `ci/container/container-run.sh` - Enter dev container
+- `ci/container/build-ic.sh` - Build IC components
+- `ci/scripts/rust-lint.sh` - Rust linting
+
+## Build System
+
+### Bazel
+
+The project uses [Bazel](https://bazel.build) as its primary build system:
+
+- `BUILD.bazel` files throughout the repository define build targets
+- `WORKSPACE.bazel` defines workspace-level configuration
+- `MODULE.bazel` defines external dependencies (Bzlmod)
+
+### Cargo
+
+Rust packages also use Cargo for dependency management:
+
+- Root `Cargo.toml` defines workspace-level dependencies
+- Individual crates have their own `Cargo.toml` files
+- The workspace uses Cargo workspace inheritance for dependency version management
+
+<Note>
+When adding dependencies, add them to the `[workspace.dependencies]` section in the root `Cargo.toml`, then reference them with `{ workspace = true }` in individual crate manifests.
+</Note>
+
+## Navigating the Codebase
+
+### Finding Components
+
+<Steps>
+  <Step title="Use Bazel queries to find targets">
+    ```bash
+    bazel query //rs/...
+    ```
+  </Step>
+  
+  <Step title="Search by functionality">
+    Look in the appropriate subsystem directory under `rs/`
+  </Step>
+  
+  <Step title="Check test files">
+    Tests are usually co-located with source code or in `rs/tests/`
+  </Step>
+</Steps>
+
+### Key Files
+
+| File | Purpose |
+|------|--------|
+| `Cargo.toml` | Workspace dependencies and package definitions |
+| `BUILD.bazel` | Build targets for Bazel |
+| `deny.toml` | Dependency security and licensing checks |
+| `clippy.toml` | Clippy linter configuration |
+| `rust-toolchain.toml` | Rust toolchain version |
+
+## Common Patterns
+
+### Workspace Members
+
+The root `Cargo.toml` lists all workspace members (534 packages as of this writing). This ensures:
+
+- Unified dependency versions across the workspace
+- Single `Cargo.lock` file
+- Faster builds through shared dependencies
+
+### Protobuf Generation
+
+Many packages have a `protobuf_generator` subdirectory:
+
+```text
+rs/crypto/
+├── src/              # Main crypto implementation
+└── protobuf_generator/  # Generates Rust code from .proto files
+```
+
+### Test Utilities
+
+Most major subsystems have associated test utilities:
+
+```text
+rs/crypto/
+├── src/              # Production code
+└── test_utils/       # Testing helpers and mocks
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Rust Dependencies" icon="rust" href="/contributing/rust-dependencies">
+    Learn about dependency management policies
+  </Card>
+  
+  <Card title="Testing Guide" icon="flask" href="/contributing/testing">
+    Understand the testing infrastructure
+  </Card>
+</CardGroup>

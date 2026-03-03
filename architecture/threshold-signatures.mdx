@@ -1,0 +1,473 @@
+---
+title: Threshold Signatures
+description: Implementation details of threshold signature schemes on the Internet Computer
+---
+
+Threshold signatures enable distributed signing where multiple parties collectively produce a signature without any single party having complete control. This is fundamental to the Internet Computer's security model.
+
+## Overview
+
+Threshold signatures allow a group of nodes to collectively sign messages such that:
+- **No single node** can create a valid signature alone
+- **Threshold number of nodes** (typically f+1) can create a signature together
+- **Combined signature** is indistinguishable from a single-party signature
+- **Public verification** uses a single public key
+
+**Location**: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/`
+
+## Threshold Signature Scheme
+
+### Participants
+
+#### Dealers
+Actors who generate keys and distribute shares:
+- Run key generation protocol
+- Create public coefficients
+- Distribute secret shares to receivers
+- May be same as receivers (in DKG)
+
+#### Signatories (Receivers)
+Actors who hold threshold key shares:
+- Receive secret key share from dealing
+- Sign messages with their share
+- Combine shares to produce final signature
+
+#### Verifiers
+Actors who verify signatures:
+- Use public coefficients
+- Verify individual shares
+- Verify combined signatures
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:3-8`
+
+## Key Properties
+
+### Uniqueness
+A valid combined signature is **unique** - the same regardless of which threshold signatures were combined.
+
+### Constant Size
+Combined signature has constant size (48 bytes), independent of:
+- Number of signers
+- Threshold value
+- Number of shares combined
+
+### Non-Interactive
+After key generation:
+- No coordination needed between signers
+- Shares can be created independently
+- Combination is deterministic
+
+### Public Verification
+Anyone can verify using public coefficients:
+- Individual signature shares
+- Combined threshold signature
+- Signatory public keys
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:10-25`
+
+## Implementation
+
+### BLS12-381 Curve
+
+The Internet Computer uses **BLS12-381**, a pairing-friendly elliptic curve:
+
+**Benefits**:
+- Short signatures (48 bytes)
+- Efficient pairing operations
+- Strong security (128-bit security level)
+- Native threshold signature support
+
+**Pairing Property**:
+```
+e(aP, bQ) = e(P, Q)^(ab)
+```
+
+This enables signature aggregation and threshold schemes.
+
+### Key Generation
+
+#### API
+
+```rust
+pub fn generate_threshold_key(
+    seed: Seed,
+    threshold: NumberOfNodes,
+    receivers: NumberOfNodes,
+) -> CryptoResult<(PublicCoefficientsBytes, Vec<SecretKeyBytes>)>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:76-87`
+
+#### Parameters
+
+- **seed**: Random input (must be secret)
+- **threshold**: Minimum signatures needed (t)
+- **receivers**: Total number of nodes (n)
+
+#### Constraint
+
+```rust
+if threshold > receivers {
+    return Err(/* InvalidThreshold */);
+}
+```
+
+Must have `threshold ≤ receivers` for valid signatures to be possible.
+
+#### Output
+
+1. **PublicCoefficients**: Used for verification
+   - Polynomial commitment to secret
+   - Enables deriving individual public keys
+   - Contains combined public key
+
+2. **SecretKeyBytes**: Vector of secret shares
+   - Length = `receivers`
+   - Index corresponds to node index
+   - Each share enables signing
+
+### Polynomial Secret Sharing
+
+Threshold signatures use Shamir's Secret Sharing:
+
+1. **Dealer** creates random polynomial of degree `threshold - 1`:
+   ```
+   f(x) = a_0 + a_1·x + a_2·x² + ... + a_(t-1)·x^(t-1)
+   ```
+
+2. **Secret** is `f(0) = a_0`
+
+3. **Shares** are `f(i)` for each receiver `i`
+
+4. **Public coefficients** are `g^(a_i)` for each coefficient
+
+5. **Reconstruction** requires any `t` shares (Lagrange interpolation)
+
+### Individual Public Keys
+
+```rust
+pub fn individual_public_key(
+    public_coefficients: &PublicCoefficientsBytes,
+    index: NodeIndex,
+) -> CryptoResult<PublicKeyBytes>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:98-105`
+
+Derive a specific signatory's public key:
+- **Input**: Public coefficients and node index
+- **Output**: Public key for that node
+- **Use**: Verify individual signature shares
+
+### Combined Public Key
+
+```rust
+pub fn combined_public_key(
+    public_coefficients: &PublicCoefficientsBytes,
+) -> CryptoResult<PublicKeyBytes>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:117-121`
+
+Extract the threshold signature public key:
+- **Input**: Public coefficients
+- **Output**: Combined public key
+- **Use**: Verify combined threshold signatures
+
+## Signing Process
+
+### Individual Signing
+
+```rust
+pub fn sign_message(
+    message: &[u8],
+    secret_key: &SecretKeyBytes,
+) -> Result<IndividualSignatureBytes, ClibThresholdSignError>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:133-139`
+
+**Steps**:
+1. Hash message to curve point: `H(m)`
+2. Multiply by secret key share: `sig_i = sk_i · H(m)`
+3. Return individual signature
+
+**Properties**:
+- Non-interactive (no coordination)
+- Deterministic for given message and key
+- Can be verified against individual public key
+
+### Signature Combination
+
+```rust
+pub fn combine_signatures(
+    signatures: &[Option<IndividualSignatureBytes>],
+    threshold: NumberOfNodes,
+) -> Result<CombinedSignatureBytes, ClibThresholdSignError>
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api.rs:141-176` (inferred)
+
+**Input Format**:
+- Array indexed by signatory position
+- `signatures[i] = Some(sig)` if signatory `i` signed
+- `signatures[i] = None` if signatory `i` didn't sign
+- Must have at least `threshold` non-None entries
+
+**Process**:
+1. Extract `threshold` valid signatures
+2. Compute Lagrange coefficients
+3. Combine: `combined = Σ(λ_i · sig_i)`
+4. Return combined signature
+
+**Important**: Individual signatures SHOULD be verified before combining to avoid invalid combined signature.
+
+## Verification
+
+### Individual Signature Verification
+
+```rust
+pub fn verify_individual_signature(
+    message: &[u8],
+    signature: &IndividualSignatureBytes,
+    public_key: &PublicKeyBytes,
+) -> CryptoResult<()>
+```
+
+Verify a single signatory's signature:
+1. Parse signature and public key
+2. Hash message to curve
+3. Check pairing equation: `e(sig, G) = e(H(m), pk)`
+
+### Combined Signature Verification
+
+```rust
+pub fn verify_combined_signature(
+    message: &[u8],
+    signature: &CombinedSignatureBytes,
+    public_coefficients: &PublicCoefficientsBytes,
+) -> CryptoResult<()>
+```
+
+Verify threshold signature:
+1. Extract combined public key from coefficients
+2. Hash message to curve
+3. Check pairing equation: `e(sig, G) = e(H(m), pk_combined)`
+
+## Integration with Consensus
+
+Threshold signatures are used throughout consensus:
+
+### Random Beacon
+
+```rust
+struct RandomBeaconContent {
+    height: Height,
+    parent: CryptoHash,
+}
+
+struct RandomBeacon {
+    content: RandomBeaconContent,
+    signature: ThresholdSignature,  // Combined threshold signature
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:21` (similar structure)
+
+**Process**:
+1. Each node signs beacon content with their share
+2. Shares aggregated when threshold reached
+3. Combined signature proves randomness
+
+### Notarization
+
+Block notarization uses threshold signatures:
+1. Validators sign block hash
+2. Notarization shares collected
+3. Combined into full notarization
+4. Proves subnet agreement on block
+
+### Certification
+
+State certification via threshold signatures:
+1. Execution nodes certify state hash
+2. Certification shares combined
+3. Lightweight clients verify with subnet public key
+
+## Data Structures
+
+### PublicCoefficients
+
+Stores polynomial commitment:
+```rust
+pub struct PublicCoefficients {
+    coefficients: Vec<PublicKey>,  // g^a_0, g^a_1, ..., g^a_(t-1)
+}
+```
+
+**Caching**: Uses deserialization cache for performance:
+```rust
+impl PublicCoefficients {
+    pub fn deserialize_cached(
+        bytes: &PublicCoefficientsBytes
+    ) -> CryptoResult<Self>
+}
+```
+
+### SecretKey
+
+Individual secret key share:
+```rust
+pub struct SecretKey {
+    secret: Scalar,  // Element of scalar field
+}
+
+pub struct SecretKeyBytes(pub Vec<u8>);
+```
+
+### Signatures
+
+```rust
+pub struct IndividualSignature {
+    signature: G1Affine,  // Point on G1 curve
+}
+
+pub struct CombinedSignature {
+    signature: G1Affine,  // Indistinguishable from individual
+}
+```
+
+Both represented as curve points, same size (48 bytes compressed).
+
+## Threshold Signature Data Store
+
+Consensus maintains a cache for verification data:
+
+```rust
+pub struct ThresholdSigDataStoreImpl {
+    // Maps DKG tag/key -> public coefficients
+    capacity_per_tag: usize,
+}
+
+const THRESHOLD_SIG_DATA_STORE_CAPACITY_PER_TAG: usize = /* ... */;
+```
+
+*Reference*: `rs/crypto/src/lib.rs:44-45`
+
+**Purpose**:
+- Cache public coefficients for active DKG intervals
+- Avoid re-fetching from registry
+- Bounded memory usage
+- Thread-safe via RwLock
+
+## Security Properties
+
+### Unforgeability
+
+Without `threshold` shares, computationally infeasible to:
+- Forge a valid combined signature
+- Derive the combined secret key
+- Predict signatures on new messages
+
+### Threshold Security
+
+As long as ≤ `threshold - 1` nodes are compromised:
+- Secret key remains secure
+- No valid signatures can be created
+- Byzantine nodes cannot forge signatures
+
+### Non-Frameability
+
+Honest nodes cannot be framed:
+- Signatures are deterministic
+- Individual signature proves specific node signed
+- Cannot attribute false signatures to honest nodes
+
+## Performance Characteristics
+
+### Operation Costs
+
+| Operation | Time Complexity | Notes |
+|-----------|----------------|-------|
+| Key Generation | O(n·t) | Generate polynomial and evaluate at n points |
+| Individual Signing | O(1) | Single scalar multiplication |
+| Signature Combination | O(t²) | Lagrange interpolation over t shares |
+| Individual Verification | O(1) | One pairing computation |
+| Combined Verification | O(1) | One pairing computation |
+
+### Benchmarks
+
+**Location**: `rs/crypto/benches/threshold_sig.rs`
+
+Measures:
+- Key generation time
+- Signing throughput
+- Verification throughput
+- Combination overhead
+
+## Error Handling
+
+```rust
+pub enum ClibThresholdSignError {
+    InvalidThreshold,
+    InvalidPublicCoefficients,
+    InvalidSecretKey,
+    InvalidSignature,
+    InsufficientSignatures,
+    // ...
+}
+```
+
+*Reference*: `rs/crypto/internal/crypto_lib/threshold_sig/bls12_381/src/api/threshold_sign_error.rs` (inferred)
+
+**Common Errors**:
+- **InvalidThreshold**: threshold > receivers
+- **InsufficientSignatures**: < threshold shares provided
+- **InvalidSignature**: Signature fails verification
+- **InvalidSecretKey**: Malformed key bytes
+
+## Usage Example
+
+```rust
+use ic_crypto_internal_seed::Seed;
+use ic_types::{NumberOfNodes, NodeIndex};
+
+// Setup
+let seed = Seed::from_bytes(&[0u8; 32]);
+let threshold = NumberOfNodes::new(3);
+let receivers = NumberOfNodes::new(5);
+
+// Generate keys
+let (public_coeffs, secret_keys) = generate_threshold_key(
+    seed,
+    threshold,
+    receivers,
+)?;
+
+// Each node signs
+let message = b"Hello, Internet Computer!";
+let mut signatures = vec![None; receivers.get() as usize];
+
+for i in 0..receivers.get() {
+    let sig = sign_message(message, &secret_keys[i as usize])?;
+    signatures[i as usize] = Some(sig);
+}
+
+// Combine first 3 signatures (threshold)
+let combined = combine_signatures(&signatures, threshold)?;
+
+// Verify combined signature
+verify_combined_signature(message, &combined, &public_coeffs)?;
+```
+
+## Related Components
+
+- [DKG](/architecture/dkg) - Distributes threshold keys without trusted dealer
+- [Consensus Layer](/architecture/consensus-layer) - Uses threshold signatures for protocol
+- [Cryptography Layer](/architecture/crypto-layer) - Overall crypto architecture
+
+## Further Reading
+
+- [BLS Signatures (Boneh-Lynn-Shacham)](https://en.wikipedia.org/wiki/BLS_digital_signature)
+- [BLS12-381 For The Rest Of Us](https://hackmd.io/@benjaminion/bls12-381)
+- [Threshold Signatures Explained](https://blog.pantherprotocol.io/threshold-signatures-explained/)

@@ -1,0 +1,417 @@
+---
+title: Cryptographic Protocols
+description: Detailed reference for cryptographic algorithms and protocols used in the Internet Computer Protocol
+---
+
+The Internet Computer Protocol employs a comprehensive suite of cryptographic algorithms and protocols to ensure security, integrity, and authenticity of operations on the network.
+
+## Overview
+
+The cryptographic foundation of ICP is implemented in the `rs/crypto/` directory and includes:
+
+- Digital signature schemes
+- Threshold cryptography
+- Hash functions and tree hashing
+- TLS for secure communication
+- Non-interactive distributed key generation (NI-DKG)
+- Random number generation
+
+## Digital Signature Schemes
+
+### Ed25519 (EdDSA)
+
+**Ed25519** is the primary signature scheme used for node authentication and basic signatures.
+
+- **Algorithm**: Edwards-curve Digital Signature Algorithm
+- **Curve**: Curve25519
+- **Use Cases**: Node signing keys, basic authentication
+- **Implementation**: `rs/crypto/internal/crypto_lib/basic_sig/ed25519/`
+- **Properties**:
+  - Fast signature generation and verification
+  - Small signature size (64 bytes)
+  - Deterministic signatures
+  - Strong security guarantees
+
+### ECDSA over secp256k1
+
+**ECDSA secp256k1** is used for Bitcoin integration and compatibility.
+
+- **Algorithm**: Elliptic Curve Digital Signature Algorithm
+- **Curve**: secp256k1 (same as Bitcoin)
+- **Use Cases**: Chain-key Bitcoin signatures, cross-chain interoperability
+- **Implementation**: `rs/crypto/internal/crypto_lib/basic_sig/ecdsa_secp256k1/`
+- **Properties**:
+  - Compatible with Bitcoin and Ethereum
+  - Widely supported curve
+  - Industry-standard algorithm
+
+### ECDSA over secp256r1 (P-256)
+
+**ECDSA P-256** provides compatibility with NIST standards.
+
+- **Algorithm**: Elliptic Curve Digital Signature Algorithm
+- **Curve**: secp256r1 / P-256 / prime256v1
+- **Use Cases**: Standards compliance, enterprise integration
+- **Implementation**: `rs/crypto/internal/crypto_lib/basic_sig/ecdsa_secp256r1/`
+- **Properties**:
+  - NIST-approved curve
+  - Widely used in TLS and enterprise systems
+
+### BLS12-381 Signatures
+
+**BLS12-381** signatures are used for threshold cryptography and multi-signatures.
+
+- **Algorithm**: Boneh-Lynn-Shacham signatures
+- **Curve**: BLS12-381 pairing-friendly curve
+- **Use Cases**: Threshold signatures, signature aggregation, multi-signatures
+- **Implementation**: `rs/crypto/internal/crypto_lib/bls12_381/`
+- **Properties**:
+  - Signature aggregation
+  - Short signatures
+  - Efficient threshold schemes
+  - Pairing-based cryptography
+
+## Threshold Cryptography
+
+### Threshold Signatures
+
+Threshold signatures allow a group of nodes to collectively sign messages without any single node having the complete signing key.
+
+- **Implementation**: `rs/crypto/utils/threshold_sig/`
+- **Protocol**: BLS threshold signatures
+- **Security**: Requires threshold of honest nodes (e.g., 2/3 majority)
+- **Use Cases**:
+  - Subnet consensus signatures
+  - Canister state certification
+  - Cross-subnet messaging
+
+**Key Features:**
+- No single point of failure
+- Signatures indistinguishable from single-party signatures
+- Efficient verification with single public key
+- Support for signature shares and combination
+
+### Non-Interactive Distributed Key Generation (NI-DKG)
+
+NI-DKG is a novel protocol that enables secure key generation without interactive rounds.
+
+- **Implementation**: `rs/crypto/utils/ni_dkg/`
+- **Innovation**: Non-interactive protocol (unique to ICP)
+- **Use Cases**: Subnet key generation, key resharing
+- **Security**: Based on threshold encryption
+
+**How It Works:**
+1. Each node generates a dealing (encrypted shares)
+2. Dealings are posted publicly
+3. Nodes verify dealings cryptographically
+4. Threshold of valid dealings creates shared key
+5. No interactive communication required
+
+**Resources:**
+- [DFINITY blog: NI-DKG](https://medium.com/dfinity/applied-crypto-one-public-key-for-the-internet-computer-ni-dkg-4af800db869d)
+
+### Canister Threshold Signatures
+
+Canister threshold signatures enable canisters to have their own signing keys managed by subnets.
+
+- **Implementation**: `rs/crypto/utils/canister_threshold_sig/`
+- **Use Cases**: Chain-key cryptography, threshold ECDSA, threshold Schnorr
+- **Applications**:
+  - Bitcoin integration
+  - Ethereum integration
+  - Cross-chain bridges
+  - Decentralized custody
+
+## Hash Functions
+
+### SHA-256
+
+**SHA-256** is the primary cryptographic hash function.
+
+- **Implementation**: `rs/crypto/sha/`
+- **Use Cases**: Content addressing, Merkle trees, general hashing
+- **Properties**:
+  - 256-bit output
+  - Cryptographically secure
+  - Widely standardized
+
+### SHA-224
+
+**SHA-224** is used where shorter hashes are acceptable.
+
+- **Implementation**: `rs/crypto/sha/`
+- **Use Cases**: Space-constrained scenarios
+- **Properties**: Truncated variant of SHA-256
+
+### Tree Hashing
+
+Tree hashing creates verifiable hash trees (Merkle trees) for state certification.
+
+- **Implementation**: `rs/crypto/tree_hash/`
+- **Use Cases**:
+  - State tree certification
+  - Certified query responses
+  - Efficient proof generation
+  - Partial state verification
+
+**Features:**
+- Hash tree construction
+- Witness generation
+- Proof verification
+- Mixed hash tree support
+- Protocol buffer serialization
+
+**Resources:**
+- Tree Hash Documentation: `rs/crypto/tree_hash/README.md`
+
+## Transport Layer Security (TLS)
+
+### TLS 1.3
+
+TLS is used for all node-to-node communication.
+
+- **Implementation**: `rs/crypto/utils/tls/`
+- **Version**: TLS 1.3
+- **Use Cases**:
+  - Node-to-node communication
+  - Boundary node connections
+  - Replica-vault communication
+
+**Features:**
+- Mutual authentication
+- Certificate validation
+- Secure key exchange
+- Perfect forward secrecy
+
+### Certificate Validation
+
+Node TLS certificates are validated against the registry.
+
+- **Implementation**: `rs/crypto/node_key_validation/tls_cert_validation/`
+- **Process**:
+  1. Extract certificate from TLS handshake
+  2. Verify certificate signature
+  3. Check certificate against registry
+  4. Validate node ID derivation
+
+## Key Management
+
+### Node Key Generation
+
+Each node generates multiple key pairs for different purposes.
+
+- **Implementation**: `rs/crypto/node_key_generation/`
+- **Key Types**:
+  - Node signing key (Ed25519)
+  - Committee signing key (BLS12-381)
+  - DKG dealing encryption key
+  - TLS certificate key
+  - iDKG key
+
+**Generation Process:**
+- Keys generated on first startup
+- Stored in secure secret key store
+- Public keys registered in the registry
+- Private keys never leave the node
+
+### Secret Key Store
+
+The Secret Key Store securely manages cryptographic keys.
+
+- **Implementation**: Part of Crypto Service Provider (CSP)
+- **Storage**: Encrypted key storage on disk
+- **Access Control**: Protected API for key operations
+- **Remote Vault**: Optional remote vault via RPC
+
+**Security Features:**
+- Keys never exposed in plaintext
+- Atomic key operations
+- Secure deletion
+- Audit logging
+
+## Random Number Generation
+
+### Cryptographically Secure RNG
+
+Secure random number generation for cryptographic operations.
+
+- **Implementation**: Crypto Service Provider
+- **Sources**: System entropy, hardware RNG
+- **Use Cases**:
+  - Key generation
+  - Nonce generation
+  - Random beacon (consensus)
+
+## Multi-Signatures
+
+Multi-signatures combine multiple signatures into one.
+
+- **Implementation**: `rs/crypto/internal/crypto_lib/multi_sig/`
+- **Algorithm**: BLS signature aggregation
+- **Use Cases**:
+  - Consensus multi-signatures
+  - Efficient batch verification
+
+## HMAC (Hash-based Message Authentication Code)
+
+HMAC provides message authentication.
+
+- **Implementation**: `rs/crypto/internal/crypto_lib/hmac/`
+- **Use Cases**: Message integrity, authentication codes
+- **Algorithm**: HMAC-SHA256
+
+## WebAssembly Compatibility
+
+Many cryptographic crates can be compiled to WebAssembly:
+
+- `ic-crypto-sha` (Wasm-compatible)
+- `ic-crypto-tree-hash` (Wasm-compatible)
+- `ic-crypto-utils-basic-sig` (Wasm-compatible)
+- `ic-crypto-utils-threshold-sig` (Wasm-compatible)
+- `ic-crypto-node-key-validation` (Wasm-compatible)
+
+This enables client-side verification and browser-based applications.
+
+## Crypto Component Architecture
+
+### Main Components
+
+```
+rs/crypto/
+├── src/              - Main CryptoComponent
+├── internal/         - Implementation details
+│   ├── crypto_lib/   - Core cryptographic primitives
+│   └── crypto_service_provider/  - CSP and vault
+├── utils/            - Utility crates
+├── tree_hash/        - Hash tree implementation
+├── sha/              - Hash functions
+└── node_key_*/       - Node key operations
+```
+
+### Crypto Service Provider (CSP)
+
+The CSP is the internal interface for cryptographic operations:
+
+- **Location**: `rs/crypto/internal/crypto_service_provider/`
+- **Purpose**: Abstraction layer for crypto operations
+- **Features**:
+  - Key generation
+  - Signing and verification
+  - Threshold operations
+  - Secure key storage
+
+### Vault Architecture
+
+The vault stores and manages secret keys:
+
+- **Local Vault**: Keys stored locally with encryption
+- **Remote Vault**: Keys in separate process via RPC
+- **Benefits of Remote Vault**:
+  - Process isolation
+  - Enhanced security
+  - Potential HSM integration
+
+## Testing and Test Vectors
+
+### Test Vectors
+
+Standardized test vectors ensure correctness:
+
+- **Implementation**: `rs/crypto/internal/test_vectors/`
+- **Includes**:
+  - Ed25519 test vectors
+  - Multi-BLS12-381 test vectors
+  - Standard test data
+
+### Test Utilities
+
+Comprehensive testing utilities:
+
+- **Location**: `rs/crypto/test_utils/`
+- **Features**: Mock CSP, test key generation, fixtures
+
+## Performance Optimization
+
+### Caching
+
+Cryptographic operations use caching for performance:
+
+- BLS12-381 signature cache
+- BLS12-381 point cache
+- G2 preparation cache
+
+### Metrics and Monitoring
+
+Crypto operations are monitored:
+
+- **Implementation**: `rs/crypto/internal/logmon/`
+- **Metrics**:
+  - Operation latency
+  - Cache hit rates
+  - Error rates
+
+## Security Considerations
+
+### Constant-Time Operations
+
+Cryptographic implementations use constant-time algorithms to prevent timing attacks.
+
+### Side-Channel Resistance
+
+Implementations are designed to resist:
+
+- Timing attacks
+- Cache-timing attacks
+- Power analysis (where applicable)
+
+### Code Safety
+
+The crypto codebase enforces strict safety:
+
+```rust
+#![forbid(unsafe_code)]
+#![deny(clippy::unwrap_used)]
+```
+
+## External Resources
+
+### Research Papers and Documentation
+
+- [Technical Overview of the Internet Computer](https://medium.com/dfinity/a-technical-overview-of-the-internet-computer-f57c62abc20f)
+- [Non-interactive Distributed Key Generation](https://medium.com/dfinity/applied-crypto-one-public-key-for-the-internet-computer-ni-dkg-4af800db869d)
+- [Consensus Protocol](https://medium.com/dfinity/achieving-consensus-on-the-internet-computer-ee9fbfbafcbc)
+- [IC Interface Specification](https://sdk.dfinity.org/docs/interface-spec/index.html)
+
+### Source Code
+
+- Main Repository: [github.com/dfinity/ic](https://github.com/dfinity/ic)
+- Crypto Directory: `rs/crypto/`
+- Cargo Docs: [docs.dfinity.org](https://docs.dfinity.org/)
+
+## Related Documentation
+
+- [Security Model](/reference/security-model): Overall security architecture
+- [Vulnerability Reporting](/reference/vulnerability-reporting): Reporting security issues
+
+## Standards and Compliance
+
+### Cryptographic Standards
+
+The Internet Computer uses well-established cryptographic standards:
+
+- **Ed25519**: RFC 8032
+- **TLS 1.3**: RFC 8446
+- **SHA-256**: FIPS 180-4
+- **ECDSA**: FIPS 186-4
+- **BLS Signatures**: Draft IRTF standard
+
+### Implementation Quality
+
+- Extensive test coverage
+- Formal verification (where applicable)
+- Third-party security audits
+- Open source review
+
+---
+
+**Note**: This documentation reflects the cryptographic protocols as implemented in the Internet Computer Protocol repository. For the most current implementation details, refer to the source code in `rs/crypto/`.

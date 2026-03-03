@@ -1,0 +1,588 @@
+---
+title: Distributed Key Generation (DKG)
+description: Implementation of Non-Interactive DKG protocol for threshold cryptography on the Internet Computer
+---
+
+Distributed Key Generation (DKG) enables subnet nodes to collectively generate threshold signature keys without any single party knowing the complete secret key. This is essential for the Internet Computer's security architecture.
+
+## Overview
+
+DKG allows a group of nodes to:
+- **Generate** threshold keys cooperatively
+- **Distribute** secret shares to each participant
+- **Avoid** trusted third parties or central dealers
+- **Reshare** keys for membership changes or key rotation
+
+**Location**: `rs/consensus/dkg/`
+
+## Non-Interactive DKG (NI-DKG)
+
+The Internet Computer uses a **non-interactive** DKG protocol based on Groth20:
+
+**Key Properties**:
+- **Non-interactive**: Dealers publish dealings independently
+- **Consensus-based**: Dealings included in blockchain
+- **Fault-tolerant**: Continues if enough honest dealers participate
+- **Publicly verifiable**: Anyone can verify dealing correctness
+
+## Architecture
+
+### DkgImpl Component
+
+```rust
+pub struct DkgImpl {
+    node_id: NodeId,
+    crypto: Arc<dyn ConsensusCrypto>,
+    consensus_cache: Arc<dyn ConsensusPoolCache>,
+    dkg_key_manager: Arc<Mutex<DkgKeyManager>>,
+    logger: ReplicaLogger,
+    metrics: Metrics,
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:62-69`
+
+**Responsibilities**:
+1. Create DKG dealings
+2. Validate received dealings
+3. Manage DKG state through consensus
+4. Coordinate with consensus pool
+
+### DkgKeyManager
+
+Manages threshold key lifecycle:
+- **Load transcripts**: Make keys available for signing
+- **Track status**: Know which keys are ready
+- **Cleanup**: Remove old keys
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:66, dkg_key_manager.rs`
+
+## DKG Protocol Flow
+
+### Phase 1: Configuration
+
+Consensus creates DKG configuration:
+
+```rust
+pub struct NiDkgConfig {
+    dkg_id: NiDkgId,
+    dealers: BTreeSet<NodeId>,
+    receivers: BTreeSet<NodeId>,
+    threshold: NumberOfNodes,
+    registry_version: RegistryVersion,
+    resharing_transcript: Option<NiDkgTranscript>,
+}
+```
+
+**Configuration Types**:
+- **Initial DKG**: First time key generation (no resharing transcript)
+- **Resharing DKG**: Key rotation (has resharing transcript)
+
+### Phase 2: Dealing Creation
+
+Each dealer creates and publishes a dealing:
+
+```rust
+fn create_dealing(
+    &self,
+    dkg_pool: &dyn DkgPool,
+    config: &NiDkgConfig,
+) -> Option<ChangeAction>
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:108-162`
+
+**Process**:
+1. Check if node is dealer for this config
+2. Check if dealing already created
+3. Load resharing transcript if needed
+4. Call crypto to create dealing
+5. Sign the dealing
+6. Return action to add to validated pool
+
+**Dealing Content**:
+```rust
+pub struct DealingContent {
+    dealing: NiDkgDealing,
+    dkg_id: NiDkgId,
+}
+
+pub type Message = Signed<DealingContent>;
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:19, 264`
+
+### Phase 3: Dealing Validation
+
+Nodes validate dealings from others:
+
+```rust
+fn validate_dealings_for_dealer(
+    &self,
+    dkg_pool: &dyn DkgPool,
+    configs: &BTreeMap<NiDkgId, NiDkgConfig>,
+    dkg_start_height: Height,
+    messages: Vec<&Message>,
+) -> Mutations
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:177-256`
+
+**Validation Checks**:
+
+1. **Version check**: Dealing uses correct replica version
+   ```rust
+   if message.content.version != ReplicaVersion::default() {
+       return Mutations::from(ChangeAction::RemoveFromUnvalidated(message));
+   }
+   ```
+   *Reference*: `rs/consensus/dkg/src/lib.rs:195-197`
+
+2. **Height check**: Dealing for current DKG interval
+   ```rust
+   if message_dkg_id.start_block_height != dkg_start_height {
+       return Mutations::new();  // Skip
+   }
+   ```
+   *Reference*: `rs/consensus/dkg/src/lib.rs:202-205`
+
+3. **Config check**: Config exists for this DKG ID
+   ```rust
+   let config = match configs.get(message_dkg_id) {
+       Some(config) => config,
+       None => return invalidate("No DKG configuration found"),
+   };
+   ```
+   *Reference*: `rs/consensus/dkg/src/lib.rs:209-218`
+
+4. **Dealer check**: Signer is authorized dealer
+   ```rust
+   if !config.dealers().get().contains(&dealer) {
+       return Err(InvalidDealer(dealer));
+   }
+   ```
+   *Reference*: `rs/consensus/dkg/src/lib.rs:267-269`
+
+5. **Cryptographic verification**:
+   ```rust
+   crypto.verify(message, config.registry_version())?;
+   NiDkgAlgorithm::verify_dealing(
+       crypto,
+       config,
+       dealer,
+       &message.content.dealing,
+   )?;
+   ```
+   *Reference*: `rs/consensus/dkg/src/lib.rs:270-276`
+
+### Phase 4: Dealing Aggregation
+
+Consensus collects sufficient dealings:
+- **Threshold**: Need `threshold` valid dealings
+- **Redundancy**: Can use more than threshold
+- **Inclusion**: Payload builder includes dealings in blocks
+
+### Phase 5: Transcript Creation
+
+Once enough dealings are finalized:
+1. Consensus creates transcript from dealings
+2. Transcript becomes part of summary block
+3. Nodes load transcript via DkgKeyManager
+4. Threshold signature operations become available
+
+## DKG Types and Intervals
+
+### DKG Tags
+
+Different DKG instances for different purposes:
+
+```rust
+pub enum NiDkgTag {
+    LowThreshold,    // f+1 threshold for notarization
+    HighThreshold,   // 2f+1 threshold for certification
+}
+```
+
+**Low Threshold**:
+- Used for: Random beacon, notarization
+- Threshold: f+1 (simple majority)
+- More efficient, available with fewer nodes
+
+**High Threshold**:
+- Used for: Certification, finalization
+- Threshold: 2f+1 (supermajority)
+- Stronger security, requires more nodes
+
+### DKG Intervals
+
+DKG runs periodically:
+
+```rust
+pub struct DkgSummary {
+    configs: BTreeMap<NiDkgId, NiDkgConfig>,
+    transcripts: BTreeMap<NiDkgId, NiDkgTranscript>,
+    // ...
+}
+```
+
+**Interval Configuration**:
+- **DKG interval length**: Blocks between DKG executions (e.g., 60 blocks)
+- **Summary block**: Contains DKG summary at interval start
+- **Start height**: Height where DKG interval begins
+
+## DKG for Different Targets
+
+### Local DKG
+
+For subnet's own threshold keys:
+
+```rust
+pub enum NiDkgTargetSubnet {
+    Local,
+    Remote(NiDkgTargetId),
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:22, 134`
+
+**Use case**: Standard subnet operations
+- Random beacon generation
+- Block notarization
+- State certification
+
+### Remote DKG
+
+For other subnet's keys:
+
+```rust
+NiDkgTargetSubnet::Remote(target_id)
+```
+
+**Use cases**:
+- **Initial DKG**: New subnet creation
+- **XNet keys**: Cross-subnet communication
+- **Subnet recovery**: Restore failed subnet
+
+**Constraints**:
+```rust
+const MAX_REMOTE_DKGS_PER_INTERVAL: usize = 1;
+const MAX_REMOTE_DKG_ATTEMPTS: u32 = 5;
+const REMOTE_DKG_REPEATED_FAILURE_ERROR: &str = 
+    "Attempts to run this DKG repeatedly failed";
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:46-53`
+
+## Resharing Protocol
+
+### Purpose
+
+Resharing allows updating key shares while keeping public key constant:
+- **Membership changes**: Add/remove nodes
+- **Key rotation**: Improve security
+- **Subnet recovery**: Restore lost shares
+
+### Resharing Transcript
+
+```rust
+pub struct NiDkgConfig {
+    // ...
+    resharing_transcript: Option<NiDkgTranscript>,
+}
+```
+
+When resharing:
+1. **Old receivers** become dealers
+2. **Resharing transcript** provides old key material
+3. **New receivers** get fresh shares
+4. **Public key** stays the same
+5. **Old shares** become invalid
+
+### Loading Transcripts
+
+```rust
+if let Some(transcript) = config.resharing_transcript()
+    && !self.dkg_key_manager
+        .lock()
+        .unwrap()
+        .is_transcript_loaded(&transcript.dkg_id)
+{
+    return None;  // Wait for transcript to load
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:119-127`
+
+Dealers must load resharing transcript before creating dealings.
+
+## Pool Management
+
+### DKG Pool
+
+Separate artifact pool for DKG dealings:
+
+```rust
+pub trait DkgPool {
+    fn get_validated(&self) -> Box<dyn Iterator<Item = &Message>>;
+    fn get_unvalidated(&self) -> Box<dyn Iterator<Item = &Message>>;
+    fn get_current_start_height(&self) -> Height;
+}
+```
+
+**Sections**:
+- **Unvalidated**: Newly received dealings
+- **Validated**: Verified dealings ready for inclusion
+
+### Pool Mutations
+
+```rust
+pub enum ChangeAction {
+    AddToValidated(Message),
+    MoveToValidated(Message),
+    RemoveFromUnvalidated(Message),
+    HandleInvalid(DkgMessageId, String),
+    Purge(Height),
+}
+
+pub type Mutations = Vec<ChangeAction>;
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:8-9` (interface definitions)
+
+**Actions**:
+- **AddToValidated**: New dealing from this node
+- **MoveToValidated**: Validated received dealing
+- **RemoveFromUnvalidated**: Duplicate or outdated dealing
+- **HandleInvalid**: Mark dealing as invalid with reason
+- **Purge**: Remove all dealings below height
+
+### Purging
+
+Keep pool bounded:
+
+```rust
+let dkg_summary_block = self.consensus_cache.summary_block();
+let start_height = dkg_summary_block.height;
+
+if start_height > dkg_pool.get_current_start_height() {
+    return ChangeAction::Purge(start_height).into();
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:297-302`
+
+When new DKG interval starts, purge old dealings.
+
+## PoolMutationsProducer Implementation
+
+```rust
+impl<T: DkgPool> PoolMutationsProducer<T> for DkgImpl {
+    type Mutations = Mutations;
+    
+    fn on_state_change(&self, dkg_pool: &T) -> Mutations {
+        // 1. Check if purge needed
+        // 2. Try creating dealings
+        // 3. Validate unvalidated dealings
+        // 4. Return mutations
+    }
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:290-350`
+
+**Execution**:
+1. Called periodically by consensus
+2. Checks current state
+3. Returns changes to apply
+4. Non-blocking, returns quickly
+
+## Bouncer (Gossip Control)
+
+```rust
+pub struct DkgBouncer {
+    metrics: BouncerMetrics,
+}
+
+impl<Pool: DkgPool> BouncerFactory<DkgMessageId, Pool> for DkgBouncer {
+    fn new_bouncer(&self, dkg_pool: &Pool) -> Bouncer<DkgMessageId> {
+        let start_height = dkg_pool.get_current_start_height();
+        Box::new(move |id| {
+            match id.height.cmp(&start_height) {
+                Ordering::Equal => BouncerValue::Wants,
+                Ordering::Greater => BouncerValue::MaybeWantsLater,
+                Ordering::Less => BouncerValue::Unwanted,
+            }
+        })
+    }
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:352-390`
+
+**Purpose**: Control which DKG artifacts to request via P2P
+- **Wants**: Current interval dealings
+- **MaybeWantsLater**: Future interval dealings
+- **Unwanted**: Past interval dealings
+
+## Error Handling
+
+### Dealing Creation Errors
+
+```rust
+match ic_interfaces::crypto::NiDkgAlgorithm::create_dealing(&*self.crypto, config) {
+    Ok(dealing) => DealingContent::new(dealing, config.dkg_id().clone()),
+    Err(err) => {
+        match config.dkg_id().target_subnet {
+            NiDkgTargetSubnet::Local => error!(self.logger, "..."),
+            NiDkgTargetSubnet::Remote(_) => info!(self.logger, "..."),
+        }
+        return None;
+    }
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:129-150`
+
+**Handling**:
+- **Local DKG failure**: Error log (serious issue)
+- **Remote DKG failure**: Info log (may resolve later)
+- Both return `None` to retry later
+
+### Validation Errors
+
+```rust
+pub enum DkgPayloadValidationError {
+    InvalidArtifact(InvalidDkgPayloadReason),
+    ValidationFailed(CryptoError),
+}
+
+pub enum InvalidDkgPayloadReason {
+    InvalidDealer(NodeId),
+    // ...
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:8` (interface)
+
+**Categories**:
+- **InvalidArtifact**: Malformed or unauthorized dealing → HandleInvalid
+- **ValidationFailed**: Temporary crypto error → Skip, retry later
+
+## Metrics
+
+```rust
+struct Metrics {
+    on_state_change_duration: Histogram,
+    on_state_change_processed: Histogram,
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:55-58, 87-101`
+
+**Tracked Metrics**:
+- `consensus_dkg_on_state_change_duration_seconds`: Processing time
+- `consensus_dkg_on_state_change_processed`: Number of dealings processed
+
+## Dealing Uniqueness
+
+Only one dealing per dealer per DKG:
+
+```rust
+if contains_dkg_messages(dkg_pool, config, *dealer_id) {
+    return Mutations::from(ChangeAction::RemoveFromUnvalidated(message));
+}
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:233-235`
+
+**Rationale**:
+- Dealing generation is non-deterministic
+- Honest nodes may create multiple valid dealings
+- Accept only first valid dealing from each dealer
+- Remove duplicates from unvalidated pool
+
+## Integration with Consensus
+
+### Summary Blocks
+
+DKG configs and transcripts in summary:
+
+```rust
+let dkg_summary_block = self.consensus_cache.summary_block();
+let dkg_summary = &dkg_summary_block.payload.as_ref().as_summary().dkg;
+let configs = &dkg_summary.configs;
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:297-299`
+
+### Parallel Processing
+
+Dealings processed in parallel:
+
+```rust
+let change_set: Mutations = dkg_summary
+    .configs
+    .par_iter()  // Parallel iterator
+    .filter_map(|(_id, config)| self.create_dealing(dkg_pool, config))
+    .collect();
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:305-309`
+
+Uses rayon for parallel iteration over configs.
+
+## Testing
+
+**Location**: `rs/consensus/dkg/src/lib.rs` (tests section, line 392+)
+
+### Test Coverage
+
+```rust
+#[test]
+fn test_create_dealings_payload() { /* ... */ }
+
+#[test]
+fn test_create_dealing_works() { /* ... */ }
+
+#[test]
+fn test_create_dealing_works_for_remote_dkg() { /* ... */ }
+
+#[test]
+fn test_validate_dealing_works_1() { /* ... */ }
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:431-1162` (test section)
+
+**Test Scenarios**:
+- Creating dealings for local and remote DKG
+- Validating correct and incorrect dealings
+- Handling duplicate dealings
+- Purging old dealings
+- Remote DKG request failures
+
+## VetKD Support
+
+### VetKD Public Keys
+
+```rust
+pub use crate::utils::get_vetkey_public_keys;
+```
+
+*Reference*: `rs/consensus/dkg/src/lib.rs:36`
+
+DKG also generates keys for VetKD (Verifiable Encrypted Threshold Key Derivation):
+- Additional DKG instances for VetKD keys
+- Used for deriving canister-specific encryption keys
+- Multiple curves supported (BLS12-381, secp256k1)
+
+## Related Components
+
+- [Threshold Signatures](/architecture/threshold-signatures) - Uses keys generated by DKG
+- [Consensus Layer](/architecture/consensus-layer) - Coordinates DKG execution
+- [Cryptography Layer](/architecture/crypto-layer) - Implements DKG algorithms
+
+## Further Reading
+
+- [Non-Interactive DKG with Resharing (Groth20)](https://eprint.iacr.org/2021/339)
+- [Internet Computer Consensus Protocol](https://medium.com/dfinity/the-internet-computers-consensus-algorithm-2a3dc3f7f45f)
+- [Threshold Cryptography Explainer](https://medium.com/dfinity/threshold-cryptography-on-the-internet-computer-9db24075ef0d)

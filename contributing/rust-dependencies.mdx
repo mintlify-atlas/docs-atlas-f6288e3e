@@ -1,0 +1,421 @@
+---
+title: Rust Dependencies
+description: Policies and best practices for managing Rust dependencies in the IC monorepo
+---
+
+To make the IC monorepo maintainable and secure, we follow strict policies for managing external Rust dependencies.
+
+## Core Principles
+
+The dependency policy is designed to:
+
+1. **Minimize dependencies** - Reduce attack surface and maintenance burden
+2. **Ensure quality** - Use only well-maintained, reputable crates
+3. **Avoid duplication** - Prevent multiple versions of the same crate
+4. **Maintain security** - Regularly audit and update dependencies
+
+## Adding New Dependencies
+
+Before adding a new external crate dependency, ensure it's truly necessary.
+
+<Steps>
+  <Step title="Check for existing alternatives">
+    Search the workspace to see if a similar crate is already imported:
+    
+    ```bash
+    # Search in Cargo.toml
+    grep "crate-name" Cargo.toml
+    
+    # Search in all package manifests
+    find . -name Cargo.toml -exec grep "crate-name" {} +
+    ```
+  </Step>
+  
+  <Step title="Verify crate quality">
+    Ensure the crate:
+    - Is well-maintained (recent commits, active maintainers)
+    - Comes from reputable authors
+    - Has good documentation
+    - Has a compatible license (Apache 2.0, MIT, BSD, etc.)
+    - Has no known security vulnerabilities
+  </Step>
+  
+  <Step title="Add to workspace dependencies">
+    Add the dependency to the `[workspace.dependencies]` section in the root `Cargo.toml`:
+    
+    ```toml
+    [workspace.dependencies]
+    new-crate = "1.2.3"
+    ```
+  </Step>
+  
+  <Step title="Reference in package manifests">
+    In each package-specific `Cargo.toml` that needs the dependency:
+    
+    ```toml
+    [dependencies]
+    new-crate = { workspace = true }
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+**Never** add a dependency with a version directly in a package manifest. Always use workspace inheritance with `{ workspace = true }`.
+</Warning>
+
+## Workspace Dependencies
+
+The root `Cargo.toml` defines all external dependencies in the `[workspace.dependencies]` section. This ensures:
+
+- **Single source of truth** for dependency versions
+- **Consistent versions** across all workspace members
+- **Easier updates** - bump once, apply everywhere
+- **Reduced lock file size** - fewer duplicate entries
+
+### Example Workspace Configuration
+
+```toml
+# Root Cargo.toml
+[workspace]
+members = [
+    "rs/consensus",
+    "rs/crypto",
+    # ... hundreds more
+]
+
+resolver = "2"
+
+[workspace.dependencies]
+# Cryptography
+ed25519-dalek = { version = "2.2.0", features = ["std", "zeroize"] }
+k256 = { version = "0.13.4", default-features = false, features = ["arithmetic", "ecdsa"] }
+ring = { version = "^0.17.7", features = ["std"] }
+
+# Async runtime
+tokio = { version = "1.42.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0.203", features = ["derive"] }
+candid = { version = "0.10.22" }
+```
+
+### Using Workspace Dependencies
+
+```toml
+# rs/crypto/Cargo.toml
+[package]
+name = "ic-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+k256 = { workspace = true }
+ring = { workspace = true }
+```
+
+## Version Updates
+
+### Bumping Dependency Versions
+
+When updating an external crate version:
+
+<Warning>
+**Always update for the entire workspace.** Avoid importing the same crate with multiple versions.
+</Warning>
+
+```bash
+# Update in root Cargo.toml
+# Before:
+[workspace.dependencies]
+tokio = { version = "1.40.0", features = ["full"] }
+
+# After:
+[workspace.dependencies]
+tokio = { version = "1.42.0", features = ["full"] }
+
+# Then run
+cargo update -p tokio
+cargo test --workspace
+```
+
+### Multiple Versions
+
+If you accidentally introduce multiple versions of a crate, you'll see them in `Cargo.lock`:
+
+```toml
+# BAD - Multiple versions of serde
+[[package]]
+name = "serde"
+version = "1.0.203"
+
+[[package]]
+name = "serde"
+version = "1.0.195"
+```
+
+To fix this:
+
+1. Identify which packages are using the old version
+2. Update them to use the workspace version
+3. Run `cargo update`
+
+## Rust Toolchain
+
+The Rust toolchain version is specified in `rust-toolchain.toml`:
+
+```toml
+[toolchain]
+channel = "1.82"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+```
+
+<Note>
+Keep the Rust toolchain version synchronized between Bazel configuration and Cargo toolchain files.
+</Note>
+
+## Security and Auditing
+
+### cargo-deny
+
+The repository uses [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) to enforce security and licensing policies. Configuration is in `deny.toml`.
+
+```bash
+# Check for security advisories
+cargo deny check advisories
+
+# Check licenses
+cargo deny check licenses
+
+# Check for banned/duplicate dependencies
+cargo deny check bans
+```
+
+### License Restrictions
+
+All dependencies must use approved licenses:
+
+- Apache 2.0
+- MIT
+- BSD variants
+- ISC
+
+Some components use more restrictive licenses:
+- [IC Community Source License 1.0](https://github.com/dfinity/ic/blob/master/licenses/IC-1.0.txt)
+- [IC Shared Community Source License 1.0](https://github.com/dfinity/ic/blob/master/licenses/IC-shared-1.0.txt)
+
+## Special Dependencies
+
+### Internal Dependencies
+
+Packages within the workspace reference each other using path dependencies:
+
+```toml
+[dependencies]
+ic-types = { path = "../types" }
+ic-crypto-internal = { path = "./internal" }
+```
+
+### Git Dependencies
+
+Some dependencies are pinned to specific git revisions:
+
+```toml
+[workspace.dependencies]
+build-info = { 
+    git = "https://github.com/dfinity-lab/build-info", 
+    rev = "701a696844fba5c87df162fbbc1ccef96f27c9d7" 
+}
+```
+
+<Warning>
+Git dependencies should be used sparingly and only when necessary (e.g., for patches not yet released).
+</Warning>
+
+### Feature Flags
+
+Carefully manage feature flags to avoid bloat:
+
+```toml
+[workspace.dependencies]
+tokio = { version = "1.42.0", features = ["full"] }
+rustls = { 
+    version = "0.23.18", 
+    default-features = false, 
+    features = ["ring", "std", "tls12"] 
+}
+```
+
+<Tip>
+Use `default-features = false` and explicitly enable only needed features to minimize binary size and compilation time.
+</Tip>
+
+## Platform-Specific Dependencies
+
+### WebAssembly Compatibility
+
+Many packages need to work in both native and WebAssembly environments:
+
+```toml
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ring = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true }
+```
+
+<Warning>
+Be careful with UUID crate versions. Version 1.13.0+ breaks `wasm32-unknown-unknown` compatibility. The workspace currently pins to `=1.12.1`.
+</Warning>
+
+## Development Dependencies
+
+Test dependencies are also managed through the workspace:
+
+```toml
+[workspace.dependencies]
+proptest = "=1.6.0"
+mockall = "0.13.0"
+criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
+
+# In package Cargo.toml
+[dev-dependencies]
+proptest = { workspace = true }
+mockall = { workspace = true }
+```
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Minimize New Dependencies">
+    Before adding a new crate, ask:
+    - Can we implement this functionality ourselves?
+    - Is there already a similar crate in the workspace?
+    - Does the functionality warrant the added dependency?
+  </Accordion>
+
+  <Accordion title="Regular Updates">
+    Keep dependencies up to date to:
+    - Get security patches
+    - Benefit from performance improvements
+    - Stay compatible with the ecosystem
+    
+    But be mindful of:
+    - Breaking changes
+    - New bugs
+    - Increased build times
+  </Accordion>
+
+  <Accordion title="Audit New Dependencies">
+    Before adding a dependency:
+    - Check the crate's repository and issue tracker
+    - Review recent commits and releases
+    - Look for security advisories
+    - Check download statistics on crates.io
+    - Verify the maintainer's reputation
+  </Accordion>
+
+  <Accordion title="Document Unusual Dependencies">
+    If using:
+    - Git dependencies
+    - Pinned versions
+    - Forked crates
+    
+    Add a comment explaining why:
+    ```toml
+    # Pinned to 1.12.1 because 1.13+ breaks wasm32 compatibility
+    # See: https://github.com/uuid-rs/uuid/releases/tag/1.13.0
+    uuid = { version = "=1.12.1", features = ["v4", "serde"] }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common Dependency Categories
+
+### Cryptography
+
+```toml
+ed25519-dalek = "2.2.0"
+k256 = "0.13.4"            # secp256k1
+p256 = "0.13.2"            # secp256r1
+ring = "^0.17.7"
+ic_bls12_381 = "0.10.1"
+sha2 = "0.10.9"
+```
+
+### Async Runtime
+
+```toml
+tokio = { version = "1.42.0", features = ["full"] }
+futures = "0.3.31"
+async-trait = "0.1.89"
+```
+
+### Serialization
+
+```toml
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = "^1.0.107"
+candid = "0.10.22"
+prost = "0.13.3"           # Protocol Buffers
+ciborium = "0.2.1"         # CBOR
+```
+
+### Networking
+
+```toml
+axum = { version = "0.8.4", features = ["ws"] }
+hyper = { version = "1.6.0", features = ["full"] }
+tonic = "0.12.3"           # gRPC
+quinn = "0.11.5"           # QUIC
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Duplicate dependency versions">
+    ```bash
+    # Find duplicate versions
+    cargo tree -d
+    
+    # Find which packages use a specific version
+    cargo tree -i -p serde@1.0.195
+    
+    # Update to workspace version
+    cargo update -p serde
+    ```
+  </Accordion>
+
+  <Accordion title="Dependency resolution conflicts">
+    ```bash
+    # Clear the cache and rebuild
+    cargo clean
+    rm Cargo.lock
+    cargo build
+    
+    # If using Bazel
+    bazel clean --expunge
+    ```
+  </Accordion>
+
+  <Accordion title="Feature flag conflicts">
+    Check if different packages are requesting incompatible features:
+    
+    ```bash
+    cargo tree -e features -i <package-name>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Testing Guide" icon="flask" href="/contributing/testing">
+    Learn about the testing infrastructure
+  </Card>
+  
+  <Card title="Code Structure" icon="folder-tree" href="/contributing/code-structure">
+    Understand the repository organization
+  </Card>
+</CardGroup>

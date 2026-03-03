@@ -1,0 +1,183 @@
+---
+title: Build Prerequisites
+description: System requirements and dependencies needed to build the Internet Computer Protocol replica
+---
+
+Before building the Internet Computer Protocol replica from source, ensure your system meets the following requirements and has all necessary dependencies installed.
+
+## System Requirements
+
+The IC build system requires:
+
+- **Architecture**: x86-64 based system
+- **Memory**: Minimum 16 GB RAM/SWAP
+- **Disk Space**: 100 GB available disk space
+- **Operating System**: Ubuntu 22.04 or newer
+
+<Warning>
+The build process is resource-intensive. Systems with less than 16 GB of memory may experience build failures or significantly slower build times.
+</Warning>
+
+## Required Software
+
+### Podman
+
+The IC build system uses containerized builds via Podman. Install Podman following the official installation guide:
+
+```bash
+sudo apt update
+sudo apt install -y podman
+```
+
+Verify the installation:
+
+```bash
+podman --version
+```
+
+### Git
+
+Git is required to clone the repository:
+
+```bash
+sudo apt install -y git
+```
+
+## Development Environment (Optional)
+
+If you plan to build without containers or develop locally, you'll need:
+
+### Bazel
+
+The IC uses Bazel 8.6.0 as its build system. The exact version is specified in `.bazelversion`:
+
+```bash .bazelversion
+8.6.0
+```
+
+Install Bazel using [Bazelisk](https://github.com/bazelbuild/bazelisk) for automatic version management:
+
+```bash
+npm install -g @bazel/bazelisk
+# or
+sudo wget -O /usr/local/bin/bazel https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+sudo chmod +x /usr/local/bin/bazel
+```
+
+### Rust Toolchain
+
+The IC is primarily written in Rust. The workspace includes hundreds of Rust packages defined in `Cargo.toml`:
+
+- **Rust Edition**: 2024
+- **Workspace members**: 500+ packages
+- **Management**: Cargo workspace with shared dependencies
+
+<Note>
+The exact Rust version is managed by Bazel's rules_rust. You don't need to install Rust manually when using the containerized build.
+</Note>
+
+### Python
+
+Python 3.x is required for build scripts and verification tools:
+
+```bash
+sudo apt install -y python3 python3-pip
+```
+
+### Additional Tools
+
+For verification and release processes:
+
+```bash
+sudo apt install -y curl
+```
+
+## Cloning the Repository
+
+Clone the IC repository:
+
+```bash
+git clone https://github.com/dfinity/ic.git
+cd ic
+```
+
+<Note>
+The repository uses Git submodules and large files. The initial clone may take several minutes depending on your connection speed.
+</Note>
+
+## Disk Space Considerations
+
+### Build Artifacts
+
+The build process generates artifacts in the `artifacts/` directory:
+
+- **Binaries**: `artifacts/release/` (~2-3 GB)
+- **Canisters**: `artifacts/canisters/` (~500 MB)
+- **IC-OS Images**: `artifacts/icos/` (~10-15 GB)
+
+### Bazel Cache
+
+Bazel maintains a build cache that can grow significantly:
+
+- **Default location**: `~/.cache/bazel`
+- **Typical size**: 10-50 GB depending on build targets
+- **Zig cache**: `/tmp/zig-cache` (shared across builds)
+
+<Warning>
+Ensure your home directory or the partition containing `/tmp` has sufficient space for the Bazel cache.
+</Warning>
+
+## Environment Validation
+
+Before proceeding to build, validate your environment:
+
+<Steps>
+  <Step title="Check disk space">
+    ```bash
+    df -h
+    ```
+    Ensure at least 100 GB is available.
+  </Step>
+  
+  <Step title="Verify Podman">
+    ```bash
+    podman info
+    ```
+    Should display Podman configuration without errors.
+  </Step>
+  
+  <Step title="Check memory">
+    ```bash
+    free -h
+    ```
+    Verify total memory (RAM + SWAP) is at least 16 GB.
+  </Step>
+  
+  <Step title="Verify Git repository">
+    ```bash
+    git status
+    ```
+    Should show a clean working directory.
+  </Step>
+</Steps>
+
+## Platform-Specific Notes
+
+### Ubuntu 22.04
+
+This is the officially supported platform. All build scripts and containers are tested on Ubuntu 22.04.
+
+### macOS
+
+While not officially supported for production builds, development builds are possible on macOS (both x86_64 and ARM64). The hermetic C++ toolchain is disabled for macOS builds.
+
+### Other Linux Distributions
+
+Builds on other distributions are possible but may require adjustments to dependency installation commands.
+
+## Next Steps
+
+Once prerequisites are met, proceed to:
+
+- [Building the Replica](/build/building-replica) - Learn how to build IC binaries and canisters
+- [Bazel Overview](/build/bazel-overview) - Understand the build system configuration

@@ -1,0 +1,100 @@
+---
+title: Published Packages
+description: Official Internet Computer packages published to crates.io for building ICP applications
+---
+
+The IC repository publishes a collection of Rust packages to [crates.io](https://crates.io) for developers building on the Internet Computer. These packages provide essential functionality for canister development, testing, and cryptographic operations.
+
+## Package Categories
+
+### Testing Framework
+
+- **[PocketIC](/packages/pocket-ic)** - A comprehensive canister testing platform that allows you to test your canisters locally with a full replica environment
+
+### Ledger Integration
+
+- **[ICRC Ledger Types](/packages/ledger-types)** - Type definitions for interacting with ICRC-1 fungible token standard ledgers
+- **icrc-ledger-client** - Functions for interacting with ICRC-1 ledgers from canister code
+- **icrc-ledger-agent** - Functions for interacting with ICRC-1 ledgers from off-chain code
+- **icrc-ledger-client-cdk** - CDK-specific client for ICRC-1 ledgers
+
+### Cryptography
+
+- **[Cryptography Packages](/packages/cryptography)** - Comprehensive suite of cryptographic packages including signature verification, Ed25519, Secp256k1, Secp256r1, HPKE, and SHA-3 utilities
+
+### Core Types
+
+- **ic-error-types** - Error type definitions used across IC packages
+- **ic-http-types** - HTTP types for IC canisters
+- **ic-ethereum-types** - Ethereum-related type definitions
+- **ic-pub-key** - Public key utilities
+
+### Utilities
+
+- **canlog** - Structured logging for canisters
+- **ic-heap-bytes** - Utilities for managing heap memory in canisters
+- **ic-metrics-assert** - Testing assertions for metrics
+
+## Publishing Guidelines
+
+All published packages follow strict quality standards:
+
+<Steps>
+  <Step title="License and README">
+    Each package must have a LICENSE file and comprehensive README.md file
+  </Step>
+  
+  <Step title="Changelog">
+    Packages maintain a [CHANGELOG.md](https://keepachangelog.com/en/1.0.0/) file following semantic versioning
+  </Step>
+  
+  <Step title="Code Ownership">
+    At least one team must be listed in the CODEOWNERS file for the package directory
+  </Step>
+  
+  <Step title="Registry Ownership">
+    A team (not an individual) must own the package name in the package registry
+  </Step>
+</Steps>
+
+## Package Independence
+
+<Note>
+Packages can depend on one another and other published code, but **must not** depend on any other code in the IC repository that is not published. This ensures that packages are stable and independently usable.
+</Note>
+
+## Installation
+
+All packages are available on [crates.io](https://crates.io) and can be added to your project using `cargo add`:
+
+```bash
+cargo add pocket-ic
+cargo add icrc-ledger-types
+cargo add ic-signature-verification
+```
+
+Or by adding them directly to your `Cargo.toml`:
+
+```toml
+[dependencies]
+pocket-ic = "12.0"
+icrc-ledger-types = "0.1"
+ic-signature-verification = "0.2"
+```
+
+## Documentation
+
+Each package provides comprehensive documentation:
+
+- **API Documentation**: Available on [docs.rs](https://docs.rs) for all published packages
+- **Usage Examples**: Included in package READMEs and integration tests
+- **Source Code**: Available in the [IC repository](https://github.com/dfinity/ic)
+
+## Community and Support
+
+If you're contributing to these packages:
+
+- Announce your contribution on the [DFINITY Developer Forum](https://forum.dfinity.org/)
+- Follow the package quality guidelines
+- Ensure all tests pass before submitting changes
+- Update relevant documentation and changelogs

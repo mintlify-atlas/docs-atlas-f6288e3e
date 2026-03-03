@@ -1,0 +1,529 @@
+---
+title: Node Provider Guide
+description: Comprehensive guide for Internet Computer node providers covering operations, responsibilities, and best practices
+---
+
+## Introduction
+
+Node providers are essential participants in the Internet Computer network. Unlike traditional blockchain "miners," IC node providers operate independent data centers that host the network's infrastructure using novel cryptographic consensus mechanisms that don't require traditional mining.
+
+<Info>
+The Internet Computer Protocol uses new and novel cryptography that does not require "mining" but does require independent node providers to run the network infrastructure.
+</Info>
+
+## Who Should Be a Node Provider
+
+Node providers should have:
+
+- **Infrastructure Expertise**: Experience managing data center operations, server hardware, and network infrastructure
+- **Security Knowledge**: Understanding of secure systems administration and network security
+- **Commitment**: Ability to maintain high availability and respond to issues promptly
+- **Capital**: Resources to purchase and maintain server hardware meeting IC specifications
+
+## Node Provider Responsibilities
+
+### Infrastructure Management
+
+<Steps>
+  <Step title="Hardware Procurement">
+    - Source servers meeting IC hardware specifications
+    - Ensure redundant power and network connectivity
+    - Maintain spare parts inventory
+    - Plan for hardware refresh cycles
+  </Step>
+
+  <Step title="Data Center Operations">
+    - Maintain physical security
+    - Ensure environmental controls (cooling, power)
+    - Monitor infrastructure health
+    - Coordinate with data center providers
+  </Step>
+
+  <Step title="Network Management">
+    - Configure and maintain network connectivity
+    - Implement firewall rules
+    - Monitor bandwidth utilization
+    - Ensure DDoS protection
+  </Step>
+</Steps>
+
+### Node Operations
+
+#### Registration and Onboarding
+
+When adding a new node to the network:
+
+<Steps>
+  <Step title="Prepare Node Operator Identity">
+    Generate and securely store your node operator keys:
+    
+    ```bash
+    # Generate node operator key pair
+    # Store private key securely (encrypted, backed up)
+    # Public key will be registered with NNS
+    ```
+    
+    <Warning>
+    The node operator private key is critical for node management. Store it securely with multiple encrypted backups.
+    </Warning>
+  </Step>
+
+  <Step title="Configure Node">
+    Create the node configuration file with:
+    
+    ```json
+    {
+      "registration": {
+        "node_operator_pem": "/config/node_operator.pem",
+        "nns_url": "https://ic0.app"
+      },
+      "transport": {
+        "node_ip": "<your_node_ipv6>"
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Install and Boot Node">
+    Follow the [node setup process](/operations/node-setup):
+    - Boot SetupOS from installation media
+    - Wait for automated installation
+    - Monitor for successful completion
+  </Step>
+
+  <Step title="Verify Registration">
+    After the node boots, the Orchestrator automatically attempts registration:
+    
+    ```rust
+    // From rs/orchestrator/src/registration.rs
+    // The node will:
+    // 1. Generate cryptographic keys
+    // 2. Build AddNodePayload message
+    // 3. Submit to NNS registry
+    // 4. Wait for confirmation
+    ```
+    
+    Monitor for the "Join request successful!" message (may take up to 10 minutes).
+  </Step>
+</Steps>
+
+#### Key Management and Rotation
+
+The IC implements automatic key rotation for enhanced security:
+
+```rust
+// From rs/orchestrator/src/registration.rs:48-50
+const DELAY_COMPENSATION: f64 = 0.85;
+
+// Key rotation is coordinated across subnet nodes
+// Gamma (rotation frequency) compensates for potential delays
+```
+
+**Key Rotation Process:**
+
+1. **Disabled**: Key rotation not enabled for this node
+2. **TooRecent**: Last rotation was too recent, waiting
+3. **Rotating**: Generating new keys
+4. **Registering**: Submitting new keys to registry
+5. **Registered**: New keys confirmed in registry
+6. **Error**: Rotation failed (alerts triggered)
+
+<Note>
+Key rotation status is exposed via the `orchestrator_key_rotation_status` metric. Monitor this to ensure healthy key rotation.
+</Note>
+
+### Monitoring and Alerting
+
+Node providers must implement comprehensive monitoring:
+
+#### Required Metrics
+
+**Orchestrator Metrics** (exposed on port 9091):
+
+```
+# Registry sync status
+ssh_access_registry_version
+firewall_registry_version
+ipv4_registry_version
+
+# Key rotation health
+orchestrator_key_rotation_status{status="<state>"}
+
+# Upgrade tracking
+orchestrator_replica_version_upgrade_prevented_total{version,reason}
+orchestrator_failed_consecutive_upgrade_checks_total
+
+# Process health
+orchestrator_replica_process_start_attempts_total
+
+# Critical errors
+orchestrator_cup_deserialization_failed_total
+orchestrator_state_removal_failed_total
+orchestrator_tasks_failed_total{task_name,reason}
+```
+
+**Node Exporter Metrics** (exposed via node_exporter):
+
+```
+# System resources
+node_cpu_seconds_total
+node_memory_MemAvailable_bytes
+node_disk_io_time_seconds_total
+node_network_receive_bytes_total
+
+# Custom IC metrics
+guestos_version{version}
+guestos_config_version{version}
+guestos_boot_action{successful_boot}
+guestos_tee_configured
+guestos_tee_active
+```
+
+See the [Monitoring Guide](/operations/monitoring) for complete metric documentation.
+
+#### Alert Configuration
+
+<Warning>
+Configure alerts for critical errors. Any increase in `critical_errors` counters requires immediate investigation.
+</Warning>
+
+Recommended alerts:
+
+- **Node Offline**: No metrics received for 5 minutes
+- **Registry Desync**: Registry version not updating
+- **Key Rotation Failure**: `orchestrator_key_rotation_status{status="Error"}` set
+- **Upgrade Failures**: Consecutive upgrade check failures
+- **Resource Exhaustion**: CPU/memory/disk approaching limits
+- **Process Crashes**: Replica restart attempts increasing
+
+### Maintenance Windows
+
+#### Planned Maintenance
+
+For routine maintenance:
+
+1. **Notify Network**: Submit maintenance proposal via NNS (if required)
+2. **Schedule Appropriately**: Coordinate with subnet schedules
+3. **Minimize Impact**: Use rolling maintenance across replicas
+4. **Monitor Recovery**: Verify node rejoins subnet successfully
+
+#### Emergency Maintenance
+
+For critical issues:
+
+1. **Assess Impact**: Determine if immediate action is required
+2. **Document**: Log all actions taken
+3. **Communicate**: Notify via appropriate channels
+4. **Post-Mortem**: Analyze root cause and prevent recurrence
+
+## Node Upgrades
+
+Node providers must facilitate smooth upgrades:
+
+### Replica Version Upgrades
+
+Replica upgrades are coordinated by the Orchestrator:
+
+```rust
+// From rs/orchestrator/src/upgrade.rs
+// The Orchestrator:
+// 1. Monitors registry for new replica versions
+// 2. Downloads upgrade artifacts from release URLs
+// 3. Verifies cryptographic hashes
+// 4. Coordinates with subnet for CUP (Catch-Up Package)
+// 5. Stops old replica
+// 6. Starts new replica version
+```
+
+<Info>
+Replica upgrades are automatic and coordinated via the NNS. No manual intervention is required for normal upgrades.
+</Info>
+
+**Upgrade Flow:**
+
+<Steps>
+  <Step title="Registry Update">
+    NNS governance approves new replica version and updates registry
+  </Step>
+
+  <Step title="Orchestrator Detection">
+    Orchestrator detects version mismatch:
+    ```rust
+    // From upgrade.rs
+    if current_version != target_version {
+        start_upgrade_process()
+    }
+    ```
+  </Step>
+
+  <Step title="Artifact Download">
+    Downloads replica binaries from configured URLs with verification
+  </Step>
+
+  <Step title="Coordinated Upgrade">
+    Uses Catch-Up Package for safe state transition
+  </Step>
+
+  <Step title="Version Verification">
+    Confirms new version is running and healthy
+  </Step>
+</Steps>
+
+### HostOS Upgrades
+
+HostOS upgrades are managed separately:
+
+```rust
+// From rs/orchestrator/src/hostos_upgrade.rs
+pub async fn upgrade_loop(
+    &mut self,
+    cancellation_token: CancellationToken,
+    mut backoff: ExponentialBackoff,
+    liveness_timeout: Duration,
+) {
+    // Continuously checks for HostOS updates
+    // Downloads from release_package_urls
+    // Verifies SHA256 hash
+    // Triggers HostOS reboot after installation
+}
+```
+
+**HostOS Upgrade Process:**
+
+1. Orchestrator detects new HostOS version in registry
+2. Downloads upgrade package from configured URLs
+3. Verifies package integrity (SHA256)
+4. Requests HostOS upgrade via utility command
+5. HostOS installs update and reboots
+6. GuestOS VM restarts automatically after HostOS boot
+
+<Note>
+HostOS upgrades cause brief node downtime during reboot. The subnet continues operating with remaining nodes.
+</Note>
+
+## Security Best Practices
+
+### Physical Security
+
+- Restrict data center access to authorized personnel
+- Use video surveillance in server areas
+- Implement audit logs for physical access
+- Secure spare hardware and backup media
+
+### Network Security
+
+#### Firewall Configuration
+
+The Orchestrator manages firewall rules automatically:
+
+```rust
+// From rs/orchestrator/src/firewall.rs
+// Firewall rules are synchronized from the registry
+// Updated based on firewall_registry_version
+```
+
+**Required Ports:**
+
+- `4100`: P2P consensus and transport (TCP/UDP)
+- `8080`: HTTP ingress (for boundary nodes)
+- `9090`: Replica metrics (internal)
+- `9091`: Orchestrator metrics (internal)
+- `9100`: Node exporter metrics (internal)
+
+<Warning>
+Do not manually modify firewall rules. The Orchestrator synchronizes rules from the registry to maintain network security policies.
+</Warning>
+
+### SSH Access Management
+
+SSH access is controlled via the registry:
+
+```rust
+// From rs/orchestrator/src/ssh_access_manager.rs
+// SSH keys are synchronized from the registry
+// Metric: ssh_access_registry_version tracks last update
+```
+
+**SSH Access Policy:**
+
+1. SSH keys are stored in the NNS registry
+2. Orchestrator updates authorized_keys from registry
+3. Access is granted based on registry permissions
+4. Changes are auditable via registry history
+
+<Info>
+For development nodes, console access is available with username/password `root`/`root`. Production nodes disable console access.
+</Info>
+
+### Cryptographic Key Management
+
+**Node Keys** (generated automatically):
+- Node signing keys
+- DKG (Distributed Key Generation) keys
+- TLS certificates
+- VET (Verifiable Encrypted Threshold) keys
+
+**Storage:**
+```
+/var/lib/ic/crypto/
+├── node_signing_pk.der
+├── node_signing_sk.der
+├── tls_cert.der
+└── ... (other cryptographic material)
+```
+
+<Warning>
+Never manually copy or modify files in `/var/lib/ic/crypto/`. Key management is handled by the replica's crypto component.
+</Warning>
+
+## Performance Optimization
+
+### Storage Performance
+
+IC nodes require fast storage for optimal performance:
+
+- **Use NVMe SSDs** for state storage
+- **Monitor FSTRIM**: Check `orchestrator_fstrim_duration_milliseconds`
+- **Track Disk I/O**: Monitor via node_exporter metrics
+
+```bash
+# FSTRIM is run automatically via systemd timer
+# Metrics location: guestos/fstrim/fstrim_tool.service
+```
+
+### Network Optimization
+
+- Use low-latency network connections
+- Monitor network metrics: `node_network_*`
+- Ensure adequate bandwidth for P2P traffic
+- Configure QoS if sharing network infrastructure
+
+### Resource Allocation
+
+**GuestOS VM Resources:**
+- Allocate sufficient CPU cores (typically 8-32)
+- Provide adequate RAM (32GB+)
+- Ensure storage IOPS meet requirements
+
+## Troubleshooting
+
+### Diagnostic Tools
+
+**Check Orchestrator Logs:**
+```bash
+journalctl -u ic-orchestrator -f
+```
+
+**Check Replica Logs (from HostOS):**
+```bash
+virsh console guestos
+# Then check: journalctl -u ic-replica -f
+```
+
+**Metrics Dashboard:**
+```bash
+# Access metrics
+curl http://localhost:9091/metrics  # Orchestrator
+curl http://localhost:9090/metrics  # Replica
+curl http://localhost:9100/metrics  # Node exporter
+```
+
+### Common Issues
+
+**Node Not Joining Subnet**
+- Check registry replication: `journalctl -u ic-registry-replicator`
+- Verify network connectivity to NNS
+- Confirm node is assigned to subnet in registry
+- Check for key registration errors
+
+**High Resource Usage**
+- Review state size: Check `/var/lib/ic/data/`
+- Monitor process metrics
+- Check for memory leaks: `node_memory_*` metrics
+- Verify no unexpected processes consuming resources
+
+**Upgrade Failures**
+- Check `orchestrator_replica_version_upgrade_prevented_total` metric
+- Review upgrade logs for error messages
+- Verify download URLs are accessible
+- Confirm cryptographic hash verification passes
+
+## Governance Participation
+
+### Network Nervous System (NNS)
+
+Node providers interact with the NNS for:
+
+- **Node Registration**: Adding new nodes to the network
+- **Subnet Assignment**: Nodes are assigned to subnets via NNS proposals
+- **Upgrade Approval**: Replica and OS upgrades are approved through governance
+- **Rewards**: Node provider rewards are managed by NNS
+
+**Key NNS Concepts:**
+
+- **Proposals**: Changes to the network require NNS proposals
+- **Neurons**: ICP tokens locked for voting power
+- **Voting**: Participate in governance decisions
+- **Following**: Delegate voting to other neurons
+
+For more information:
+- [Understanding the Internet Computer's Network Nervous System](https://medium.com/dfinity/understanding-the-internet-computers-network-nervous-system-neurons-and-icp-utility-tokens-730dab65cae8)
+- [List of NNS Proposals](https://github.com/dfinity/nns-proposals)
+
+### Node Provider Proposals
+
+Common proposal types for node providers:
+
+1. **Add Node**: Register a new node
+2. **Remove Node**: Decommission a node
+3. **Update Node**: Modify node configuration
+4. **Subnet Membership**: Assign nodes to subnets
+
+## Economics and Rewards
+
+Node providers receive rewards based on:
+
+- **Node Type**: Different node types have different reward rates
+- **Location**: Geographic diversity is rewarded
+- **Performance**: Uptime and performance affect rewards
+- **Subnet Type**: Application vs. system subnets may differ
+
+For current economics:
+- [The Internet Computer's Token Economics: An Overview](https://medium.com/dfinity/the-internet-computers-token-economics-an-overview-29e238bd1d83)
+- [IC Dashboard - Rewards](https://dashboard.internetcomputer.org)
+
+## Resources
+
+### Official Resources
+
+- **IC Wiki for Node Providers**: [wiki.internetcomputer.org](https://wiki.internetcomputer.org/wiki/Internet_Computer_wiki#For_Node_Providers)
+- **IC Dashboard**: [dashboard.internetcomputer.org](https://dashboard.internetcomputer.org)
+- **Developer Forum**: [forum.dfinity.org](https://forum.dfinity.org/)
+- **NNS Proposals**: [github.com/dfinity/nns-proposals](https://github.com/dfinity/nns-proposals)
+
+### Technical Documentation
+
+- [Node Setup Guide](/operations/node-setup)
+- [Monitoring Guide](/operations/monitoring)
+- [Upgrade Procedures](/operations/upgrades)
+
+### Community
+
+- Node Provider Forum: [forum.dfinity.org](https://forum.dfinity.org/)
+- Technical Support Channels
+- Node Provider Working Groups
+
+## Getting Help
+
+If you encounter issues:
+
+1. **Check Documentation**: Review guides and troubleshooting sections
+2. **Review Metrics**: Examine Prometheus metrics for anomalies
+3. **Check Logs**: Review systemd journal logs for errors
+4. **Search Forum**: Look for similar issues in the community forum
+5. **Ask for Help**: Post on the developer forum with details
+6. **Report Bugs**: File issues for reproducible bugs
+
+<Note>
+When asking for help, include: node ID, error messages, relevant metrics, and steps to reproduce the issue.
+</Note>

@@ -1,0 +1,262 @@
+---
+title: 'Network Nervous System (NNS)'
+description: 'Technical reference for the Network Nervous System governance canister and its core components'
+---
+
+## Overview
+
+The Network Nervous System (NNS) is the decentralized governance system that controls the Internet Computer Protocol (ICP). The NNS Governance canister is the "heart" of this system, managing neurons, proposals, and voting mechanisms that allow the community to make decisions about the network.
+
+<Info>
+For detailed conceptual information about the NNS, see the [Understanding the Network Nervous System](https://medium.com/dfinity/understanding-the-internet-computers-network-nervous-system-neurons-and-icp-utility-tokens-730dab65cae8) article.
+</Info>
+
+## Core Components
+
+### Governance Canister
+
+The NNS Governance canister is located at `~/workspace/source/rs/nns/governance/` and provides:
+
+- **Neuron Management**: Staking ICP tokens to create voting entities
+- **Proposal System**: Submission, voting, and execution of governance proposals
+- **Voting Rewards**: Distribution of rewards to neurons that participate in voting
+- **Follow Relationships**: Liquid democracy through following other neurons
+
+### Neurons
+
+Neurons are the fundamental voting entities in the NNS. They represent staked ICP tokens and have the following characteristics:
+
+#### Neuron States
+
+A neuron can be in one of four states:
+
+| State | Description |
+|-------|-------------|
+| `NOT_DISSOLVING` | Neuron is locked, accrues age, and can vote if dissolve delay ≥ 6 months |
+| `DISSOLVING` | Dissolve delay decreases over time, age is zero |
+| `DISSOLVED` | Can be disbursed, cannot vote (dissolve delay = 0) |
+| `SPAWNING` | Maturity is being converted to ICP |
+
+#### Key Properties
+
+```protobuf
+message Neuron {
+  bytes account;                              // Unique neuron identifier
+  PrincipalId controller;                     // Principal that controls the neuron
+  uint64 cached_neuron_stake_e8s;            // Staked ICP (in e8s)
+  uint64 neuron_fees_e8s;                    // Accumulated fees
+  uint64 created_timestamp_seconds;          // Creation time
+  uint64 aging_since_timestamp_seconds;      // When aging started
+  uint64 maturity_e8s_equivalent;            // Accumulated maturity
+  
+  oneof dissolve_state {
+    uint64 when_dissolved_timestamp_seconds;  // For dissolving neurons
+    uint64 dissolve_delay_seconds;            // For non-dissolving neurons
+  }
+  
+  bool kyc_verified;                         // KYC status
+  bool not_for_profit;                       // Non-profit designation
+  Visibility visibility;                      // Public or private
+}
+```
+
+#### Neuron Types
+
+- `NEURON_TYPE_SEED`: Neurons created from Genesis Token Canister seed accounts
+- `NEURON_TYPE_ECT`: Neurons created from Early Contributor Token (ECT) accounts
+
+### Voting Power
+
+Voting power is calculated based on:
+
+1. **Stake**: Amount of ICP locked in the neuron
+2. **Dissolve Delay**: Longer delays increase voting power (minimum 6 months to vote)
+3. **Age**: Time the neuron has been non-dissolving (increases voting power)
+
+## Proposal Topics
+
+Proposals are organized into topics that determine voting behavior and permissions:
+
+| Topic | ID | Description | Voting Period |
+|-------|----|----|---------------|
+| `NEURON_MANAGEMENT` | 1 | Manage individual neurons | Short |
+| `EXCHANGE_RATE` | 2 | Update ICP/SDR exchange rate | Short |
+| `NETWORK_ECONOMICS` | 3 | Modify economic parameters | Standard |
+| `GOVERNANCE` | 4 | Governance administration | Standard |
+| `NODE_ADMIN` | 5 | Node software/OS upgrades | Standard |
+| `PARTICIPANT_MANAGEMENT` | 6 | Manage node providers/operators | Standard |
+| `SUBNET_MANAGEMENT` | 7 | Create/modify subnets | Standard |
+| `APPLICATION_CANISTER_MANAGEMENT` | 8 | Manage NNS canisters | Standard |
+| `IC_OS_VERSION_DEPLOYMENT` | 12 | Deploy IC OS versions | Standard |
+| `IC_OS_VERSION_ELECTION` | 13 | Elect new IC OS versions | Standard |
+| `SNS_AND_COMMUNITY_FUND` | 14 | SNS and Community Fund operations | Standard |
+| `API_BOUNDARY_NODE_MANAGEMENT` | 15 | Manage API boundary nodes | Standard |
+| `SUBNET_RENTAL` | 16 | Subnet rental management | Standard |
+| `PROTOCOL_CANISTER_MANAGEMENT` | 17 | Manage protocol canisters | Standard |
+| `SERVICE_NERVOUS_SYSTEM_MANAGEMENT` | 18 | Manage SNS canisters | Standard |
+
+<Note>
+Proposals on `NEURON_MANAGEMENT` and `EXCHANGE_RATE` topics have **short voting periods** due to their time-sensitive nature.
+</Note>
+
+## NNS Functions
+
+The NNS can execute various administrative functions through proposals:
+
+### Subnet Management
+
+- `NNS_FUNCTION_CREATE_SUBNET`: Create new decentralized subnet
+- `NNS_FUNCTION_ADD_NODE_TO_SUBNET`: Add node to existing subnet
+- `NNS_FUNCTION_UPDATE_CONFIG_OF_SUBNET`: Update subnet configuration
+- `NNS_FUNCTION_RECOVER_SUBNET`: Recover stalled subnet using CUP
+
+### Canister Management
+
+- `NNS_FUNCTION_NNS_CANISTER_INSTALL`: Install new NNS canister
+- `NNS_FUNCTION_NNS_CANISTER_UPGRADE`: Upgrade existing NNS canister
+
+### Version Management
+
+- `NNS_FUNCTION_BLESS_REPLICA_VERSION`: Approve new replica version for deployment
+
+## Creating and Managing Neurons
+
+### Staking Process
+
+Creating a neuron is a two-step process:
+
+1. **Transfer ICP**: Send ICP tokens to the Governance canister's subaccount
+   - The subaccount is derived from the principal and a memo
+   - Transfer is made via the Ledger canister
+
+2. **Claim Neuron**: Call Governance to create the neuron
+   - Governance checks the subaccount balance
+   - Creates a neuron if the balance is sufficient
+
+<Warning>
+Newly created neurons cannot vote until their dissolve delay is increased to at least 6 months.
+</Warning>
+
+### Voting
+
+To vote with a neuron:
+
+1. Ensure dissolve delay ≥ 6 months
+2. Call the Governance canister with:
+   - Neuron ID
+   - Proposal ID
+   - Vote choice (`VOTE_YES` or `VOTE_NO`)
+
+### Following
+
+Neurons can follow other neurons on specific topics:
+
+```protobuf
+message Followees {
+  repeated NeuronId followees = 1;
+}
+```
+
+When a followed neuron votes, the following neuron automatically casts the same vote.
+
+## Architecture
+
+### Source Code Structure
+
+```
+rs/nns/governance/
+├── src/
+│   ├── governance.rs          # Core governance logic (344KB)
+│   ├── neuron_store.rs        # Neuron storage and retrieval
+│   ├── voting.rs              # Voting mechanisms
+│   ├── proposals/             # Proposal type implementations
+│   ├── neurons_fund/          # Neurons' Fund logic
+│   └── pb/                    # Protobuf type extensions
+├── proto/                     # Protocol buffer definitions
+├── canister/                  # Canister entry points
+└── tests/                     # Integration tests
+```
+
+### Key Modules
+
+- **`governance.rs`**: Main governance state machine and proposal execution
+- **`neuron_store.rs`**: Efficient neuron storage using stable memory
+- **`voting.rs`**: Vote tallying and following logic
+- **`network_economics.rs`**: Reward calculations and economics
+- **`neurons_fund.rs`**: Neurons' Fund participation in SNS swaps
+
+## Deployment
+
+The NNS canisters are deployed using the `ic-nns-init` tool:
+
+```bash
+cargo run --bin ic-nns-init -- \
+  --url http://localhost:8080/ \
+  --wasm-dir=./target/wasm32-unknown-unknown/release
+```
+
+<Info>
+In production, NNS canisters are deployed by Ansible onto the NNS subnet.
+</Info>
+
+## Interacting with the NNS
+
+### Using dfx
+
+Local interaction example:
+
+```bash
+# Get neuron information
+dfx canister call neurons get_neuron_info --type=idl '( 449479075714955186 )'
+
+# Vote on a proposal
+dfx canister call neurons forward_vote --type=idl \
+  '( 449479075714955186, 1, variant{Yes} )'
+
+# Get pending proposals
+dfx canister call governance get_pending_proposals
+```
+
+### Using ic-admin
+
+Administrative operations:
+
+```bash
+# Get blessed replica versions
+cargo run --bin ic-admin -- \
+  --nns-url=http://localhost:8080 \
+  get-blessed-replica-versions
+
+# Get subnet list
+cargo run --bin ic-admin -- \
+  --nns-url=http://localhost:8080 \
+  get-subnet-list
+```
+
+## External Resources
+
+<CardGroup cols={2}>
+  <Card title="NNS Proposals" icon="file-lines" href="https://github.com/dfinity/nns-proposals">
+    Complete list of NNS proposals submitted to the network
+  </Card>
+  
+  <Card title="NNS Dashboard" icon="chart-line" href="https://nns.ic0.app">
+    Web interface for interacting with NNS governance
+  </Card>
+  
+  <Card title="Understanding NNS" icon="book" href="https://medium.com/dfinity/understanding-the-internet-computers-network-nervous-system-neurons-and-icp-utility-tokens-730dab65cae8">
+    Detailed explanation of NNS concepts and mechanisms
+  </Card>
+  
+  <Card title="Technical Overview" icon="microscope" href="https://medium.com/dfinity/a-technical-overview-of-the-internet-computer-f57c62abc20f">
+    Technical deep dive into the Internet Computer protocol
+  </Card>
+</CardGroup>
+
+## Source Code Locations
+
+- **Main Directory**: `rs/nns/`
+- **Governance Canister**: `rs/nns/governance/`
+- **Proto Definitions**: `rs/nns/governance/proto/ic_nns_governance/pb/v1/governance.proto`
+- **Common Utilities**: `rs/nervous_system/common/`
+- **README**: `rs/nns/README.adoc`

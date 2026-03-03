@@ -1,0 +1,437 @@
+---
+title: 'Execution Environment'
+description: 'WebAssembly execution infrastructure for smart contracts on the Internet Computer'
+---
+
+The execution environment is responsible for executing canister smart contracts written in WebAssembly. It provides sandboxed, deterministic execution with resource metering and system API access.
+
+## Overview
+
+The execution environment consists of several interconnected components that work together to safely execute canister code:
+
+- **Hypervisor**: WebAssembly runtime with system call interface
+- **Scheduler**: Orchestrates canister execution rounds
+- **Canister Manager**: Lifecycle management (create, install, upgrade)
+- **Query Handler**: Non-replicated query execution
+- **Ingress Filter**: Validates incoming messages
+
+<Info>
+All canister execution is deterministic and metered to ensure consistent state across all subnet nodes.
+</Info>
+
+## Architecture Components
+
+### Execution Services
+
+The `ExecutionServices` struct bundles all public-facing execution components:
+
+```rust
+pub struct ExecutionServices {
+    pub ingress_filter: IngressFilterService,
+    pub ingress_history_writer: Arc<IngressHistoryWriterImpl>,
+    pub ingress_history_reader: Box<dyn IngressHistoryReader>,
+    pub query_execution_service: QueryExecutionService,
+    pub transform_execution_service: TransformExecutionService,
+    pub scheduler: Box<dyn Scheduler<State = ReplicatedState>>,
+    pub query_stats_payload_builder: QueryStatsPayloadBuilderParams,
+    pub cycles_account_manager: Arc<CyclesAccountManager>,
+}
+```
+
+Location: `rs/execution_environment/src/lib.rs:87-96`
+
+### Setup and Initialization
+
+The execution environment is initialized with:
+
+<Accordion title="Configuration Parameters">
+- **Subnet ID and Type**: Identifies the subnet and its resource limits
+- **Config**: Execution environment configuration (memory limits, instruction limits)
+- **SubnetConfig**: Scheduler configuration and capacity
+- **StateReader**: Read access to replicated state
+- **PageAllocatorFileDescriptor**: Memory management for canister heaps
+- **Temp Directory**: Workspace for compilation artifacts
+
+Location: `rs/execution_environment/src/lib.rs:102-113`
+</Accordion>
+
+<Accordion title="Initialization Flow">
+```rust
+pub fn setup_execution(
+    logger: ReplicaLogger,
+    metrics_registry: &MetricsRegistry,
+    own_subnet_id: SubnetId,
+    own_subnet_type: SubnetType,
+    config: Config,
+    subnet_config: SubnetConfig,
+    state_reader: Arc<dyn StateReader<State = ReplicatedState>>,
+    fd_factory: Arc<dyn PageAllocatorFileDescriptor>,
+    completed_execution_messages_tx: Sender<(MessageId, Height)>,
+    temp_dir: &Path,
+) -> ExecutionServices
+```
+
+Location: `rs/execution_environment/src/lib.rs:102-113`
+</Accordion>
+
+## Core Components
+
+### 1. Hypervisor
+
+The hypervisor is the WebAssembly runtime that executes canister code:
+
+<Accordion title="Hypervisor Responsibilities">
+- **WebAssembly Execution**: Runs Wasm code in a sandboxed environment
+- **System API**: Provides canister APIs (call, trap, time, etc.)
+- **Resource Metering**: Tracks instruction count and memory usage
+- **Compilation**: JIT compiles Wasm to native code
+- **Page Management**: Handles canister heap memory with copy-on-write
+
+```rust
+let hypervisor = Arc::new(Hypervisor::new(
+    config.clone(),
+    metrics_registry,
+    own_subnet_id,
+    logger.clone(),
+    Arc::clone(&cycles_account_manager),
+    scheduler_config.dirty_page_overhead,
+    Arc::clone(&fd_factory),
+    Arc::clone(&state_reader),
+    temp_dir,
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:309-331`
+</Accordion>
+
+### 2. Scheduler
+
+The scheduler orchestrates execution rounds across all canisters:
+
+<Accordion title="Scheduler Features">
+- **Round-based Execution**: Executes canisters in deterministic rounds
+- **Fair Scheduling**: Distributes compute capacity across canisters
+- **Instruction Limits**: Enforces per-message and per-round limits
+- **Heap Delta Rate Limiting**: Prevents memory growth attacks
+- **Long-running Execution**: Supports DTS (Deterministic Time Slicing)
+
+```rust
+let scheduler = Box::new(SchedulerImpl::new(
+    subnet_config.scheduler_config,
+    config.embedders_config,
+    own_subnet_id,
+    Arc::clone(&ingress_history_writer) as Arc<_>,
+    Arc::clone(&execution_environment) as Arc<_>,
+    Arc::clone(&cycles_account_manager),
+    metrics_registry,
+    logger,
+    config.rate_limiting_of_heap_delta,
+    config.rate_limiting_of_instructions,
+    Arc::clone(&fd_factory),
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:159-171`
+</Accordion>
+
+### 3. Canister Manager
+
+Manages canister lifecycle operations:
+
+<Accordion title="Canister Manager Operations">
+- **canister_create**: Create new canister instances
+- **canister_install**: Install WebAssembly code
+- **canister_upgrade**: Upgrade canister code while preserving state
+- **canister_uninstall**: Remove code but keep canister ID
+- **canister_delete**: Permanently delete canister
+- **canister_snapshot**: Create state snapshots
+
+```rust
+let canister_manager = Arc::new(CanisterManager::new(
+    Arc::clone(&hypervisor),
+    logger.clone(),
+    canister_manager_config,
+    Arc::clone(&cycles_account_manager),
+    Arc::clone(&ingress_history_writer) as Arc<_>,
+    Arc::clone(&fd_factory),
+    config.environment_variables,
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:367-375`
+</Accordion>
+
+### 4. Execution Environment
+
+The main execution coordinator:
+
+<Accordion title="Execution Environment Responsibilities">
+- **Message Execution**: Executes ingress messages, inter-canister calls, responses
+- **Heartbeats**: Executes periodic canister heartbeat functions
+- **Timers**: Manages canister timer callbacks
+- **Cleanup**: Handles execution cleanup and state updates
+- **Cycles Accounting**: Tracks and charges cycles for execution
+
+```rust
+let exec_env = Arc::new(ExecutionEnvironment::new(
+    logger.clone(),
+    Arc::clone(&hypervisor),
+    Arc::clone(&canister_manager),
+    Arc::clone(&ingress_history_writer) as Arc<_>,
+    metrics_registry,
+    own_subnet_id,
+    own_subnet_type,
+    config.clone(),
+    Arc::clone(&cycles_account_manager),
+    scheduler_config.scheduler_cores,
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:377-388`
+</Accordion>
+
+### 5. Query Handler
+
+Handles non-replicated query execution:
+
+<Accordion title="Query Handler Features">
+- **Synchronous Queries**: Execute read-only queries without consensus
+- **Query Scheduling**: Manages concurrent query execution threads
+- **Query Statistics**: Tracks query execution metrics
+- **Composite Queries**: Supports inter-canister query calls
+
+```rust
+let sync_query_handler = InternalHttpQueryHandler::new(
+    logger.clone(),
+    hypervisor,
+    canister_manager,
+    own_subnet_type,
+    config.clone(),
+    metrics_registry,
+    scheduler_config.max_instructions_per_query_message,
+    Arc::clone(&cycles_account_manager),
+    query_stats_collector,
+);
+```
+
+Location: `rs/execution_environment/src/lib.rs:389-399`
+</Accordion>
+
+## Query Execution Types
+
+The execution environment supports two types of query execution:
+
+### Replicated Queries
+
+<Info>
+Executed through consensus as part of update calls. State changes are persisted.
+</Info>
+
+```rust
+pub enum QueryExecutionType {
+    Replicated,
+    // ...
+}
+```
+
+Location: `rs/execution_environment/src/lib.rs:60-65`
+
+### Non-Replicated Queries
+
+<Info>
+Executed locally without consensus. Fast but read-only with no state changes.
+</Info>
+
+```rust
+pub enum QueryExecutionType {
+    NonReplicated {
+        call_context_id: CallContextId,
+        network_topology: Arc<NetworkTopology>,
+        query_kind: NonReplicatedQueryKind,
+    },
+}
+```
+
+#### Query Kinds
+
+<Accordion title="Stateful Queries">
+Maintain temporary state during execution for composite queries:
+
+```rust
+pub enum NonReplicatedQueryKind {
+    Stateful { call_origin: CallOrigin },
+    // ...
+}
+```
+
+Location: `rs/execution_environment/src/lib.rs:82-83`
+</Accordion>
+
+<Accordion title="Pure Queries">
+Completely stateless, cannot make inter-canister calls:
+
+```rust
+pub enum NonReplicatedQueryKind {
+    Pure { caller: PrincipalId },
+}
+```
+
+Location: `rs/execution_environment/src/lib.rs:83-84`
+</Accordion>
+
+## Cycles Account Manager
+
+Manages the subnet's cycles economy:
+
+<Accordion title="Cycles Management">
+- **Charging**: Charges cycles for execution, storage, messaging
+- **Refunds**: Handles unused cycles refunds
+- **Minting**: Creates cycles from ICP (NNS subnet only)
+- **Freezing**: Freezes canisters that run out of cycles
+
+```rust
+let cycles_account_manager = Arc::new(CyclesAccountManager::new(
+    scheduler_config.max_instructions_per_message,
+    own_subnet_type,
+    own_subnet_id,
+    subnet_config.cycles_account_manager_config,
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:302-307`
+</Accordion>
+
+## Ingress Handling
+
+### Ingress Filter
+
+Filters and validates incoming ingress messages:
+
+<Accordion title="Ingress Filter Checks">
+- **Signature Verification**: Validates sender signatures
+- **Canister Inspection**: Runs canister `canister_inspect_message` hook
+- **Resource Limits**: Checks message size and queue capacity
+- **Rate Limiting**: Prevents spam and DoS attacks
+
+```rust
+let ingress_filter = IngressFilterServiceImpl::new_service(
+    query_scheduler.clone(),
+    Arc::clone(&state_reader),
+    Arc::clone(&exec_env),
+    ingress_filter_metrics.clone(),
+);
+```
+
+Location: `rs/execution_environment/src/lib.rs:410-415`
+</Accordion>
+
+### Ingress History
+
+Tracks the status of ingress messages:
+
+<Accordion title="Ingress History Features">
+- **Status Tracking**: Records execution status (received, processing, completed, failed)
+- **Pruning**: Removes old entries based on time and capacity limits
+- **Certification**: Provides certified status for users
+
+```rust
+let ingress_history_writer = Arc::new(IngressHistoryWriterImpl::new(
+    config.clone(),
+    logger.clone(),
+    metrics_registry,
+    completed_execution_messages_tx,
+    Arc::clone(&state_reader),
+));
+let ingress_history_reader = Box::new(IngressHistoryReaderImpl::new(
+    Arc::clone(&state_reader)
+));
+```
+
+Location: `rs/execution_environment/src/lib.rs:333-340`
+</Accordion>
+
+## Resource Metering
+
+The execution environment enforces strict resource limits:
+
+### Instruction Limits
+
+- **Per-message limit**: Maximum instructions for a single message
+- **Per-round limit**: Maximum instructions per execution round
+- **Slice limit**: Instructions per DTS slice for long executions
+
+### Memory Limits
+
+- **Wasm memory**: 4GB max per canister (32-bit address space)
+- **Stable memory**: 400GB max (48-bit address space)
+- **Heap delta rate limiting**: Limits memory growth rate
+
+### Execution Time
+
+- **Deterministic Time Slicing**: Pauses and resumes long-running executions
+- **Round duration**: Target duration per execution round
+- **Timeout handling**: Detects and handles stuck executions
+
+## Sandboxing and Security
+
+The execution environment provides multiple layers of security:
+
+<Accordion title="Process Isolation">
+Canister execution runs in separate sandboxed processes:
+- Prevents memory corruption attacks
+- Limits resource access
+- Enables safe multi-tenancy
+</Accordion>
+
+<Accordion title="WebAssembly Sandboxing">
+Wasm provides memory safety and control flow integrity:
+- Linear memory isolation
+- No direct system calls
+- Controlled imports/exports
+</Accordion>
+
+<Accordion title="System API Restrictions">
+Canisters can only access the environment through controlled APIs:
+- No filesystem access
+- No network access (except HTTPS outcalls)
+- No arbitrary code execution
+</Accordion>
+
+## Determinism Guarantees
+
+All execution must be deterministic for consensus:
+
+1. **No external randomness**: Pseudo-random bytes from VRF
+2. **No wall clock time**: Time comes from consensus
+3. **No floating point**: Disabled in Wasm execution
+4. **Deterministic scheduling**: Round-robin execution order
+5. **Metered execution**: Instruction counting ensures termination
+
+## Performance Optimizations
+
+<Accordion title="Copy-on-Write Memory">
+Canister heap memory uses CoW for efficient cloning:
+- State snapshots share unchanged pages
+- Only modified pages are copied
+- Reduces checkpoint creation overhead
+</Accordion>
+
+<Accordion title="WebAssembly Compilation Caching">
+Compiled Wasm modules are cached:
+- Avoids recompilation on every execution
+- Persisted across checkpoints
+- Warmed up during checkpoint loading
+</Accordion>
+
+<Accordion title="Query Caching">
+Query results can be cached for identical requests:
+- Reduces redundant execution
+- Improves query response times
+- Configurable per canister
+</Accordion>
+
+## Related Components
+
+- [Replica Architecture](/architecture/replica) - Overall replica structure
+- [State Manager](/architecture/state-manager) - State persistence
+- [Message Routing](/architecture/message-routing) - Inter-canister messaging

@@ -1,0 +1,329 @@
+---
+title: Building the Replica
+description: Step-by-step guide to building Internet Computer binaries, canisters, and IC-OS images
+---
+
+The Internet Computer Protocol provides a containerized build system that produces reproducible builds of the replica, canisters, and operating system images.
+
+## Quick Start
+
+The simplest way to build the IC is using the containerized build script:
+
+```bash
+./ci/container/build-ic.sh -b -c
+```
+
+This command builds both binaries (`-b`) and canisters (`-c`) inside a Docker container with all dependencies pre-installed.
+
+## Build Script Overview
+
+The `build-ic.sh` script located at `ci/container/build-ic.sh` is the primary entry point for building the IC:
+
+```bash ci/container/build-ic.sh
+Usage: build-ic.sh [ --binaries | -b ] [ --canisters | -c ] [ --icos | -i ] [--no-release | -n ]
+
+    --binaries   | -b   Build IC Binaries
+    --canisters  | -c   Build IC Canisters  
+    --icos       | -i   Build IC-OS Images
+    --no-release | -n   Non-Release Build
+```
+
+### Container Detection
+
+The script automatically detects whether it's running inside the build container:
+
+```bash
+if [ ! -f /home/ubuntu/.ic-build-container ]; then
+    echo dropping into container
+    exec "$ROOT_DIR"/ci/container/container-run.sh --image ic-build bash "$0" "$@"
+fi
+```
+
+If not running in a container, it automatically drops into the correct container environment.
+
+<Warning>
+Ensure your Git working directory is clean before building. The script will exit if uncommitted changes are detected.
+</Warning>
+
+## Building Components
+
+### Building Binaries
+
+Build only the IC replica and related binaries:
+
+```bash
+./ci/container/build-ic.sh -b
+```
+
+This builds the Bazel target `//publish/binaries:bundle` and outputs artifacts to:
+
+- **Output directory**: `artifacts/release/`
+- **Contents**: 
+  - `replica` - The main replica binary
+  - `orchestrator` - Node orchestration service
+  - `canister_sandbox` - Canister execution sandbox
+  - `ic-starter` - Local development tool
+  - Other supporting binaries
+  - `SHA256SUMS` - Checksums for verification
+
+### Building Canisters
+
+Build system and NNS canisters:
+
+```bash
+./ci/container/build-ic.sh -c
+```
+
+This builds the Bazel target `//publish/canisters:bundle` and outputs artifacts to:
+
+- **Output directory**: `artifacts/canisters/`
+- **Contents**:
+  - `registry-canister.wasm.gz` - Registry canister
+  - `governance-canister.wasm.gz` - Governance canister
+  - `ledger-canister_notify-method.wasm.gz` - ICP ledger
+  - `cycles-minting-canister.wasm.gz` - CMC
+  - Other system canisters
+  - `SHA256SUMS` - Checksums for verification
+
+### Building IC-OS Images
+
+Build all operating system images (GuestOS, HostOS, SetupOS):
+
+```bash
+./ci/container/build-ic.sh -i
+```
+
+This builds multiple Bazel targets:
+
+- `//ic-os/guestos/envs/prod:bundle-update` - GuestOS update image
+- `//ic-os/hostos/envs/prod:bundle-update` - HostOS update image  
+- `//ic-os/setupos/envs/prod:bundle` - SetupOS installation image
+- `//ic-os/guestos/envs/recovery:bundle-update` - Recovery image
+
+Artifacts are output to:
+
+- **GuestOS**: `artifacts/icos/guestos/`
+  - `disk/` - Full disk images
+  - `update/` - Update images and `SHA256SUMS`
+  - `update-img-recovery/` - Recovery images
+- **HostOS**: `artifacts/icos/hostos/`
+  - `disk/` - Full disk images
+  - `update/` - Update images and `SHA256SUMS`
+- **SetupOS**: `artifacts/icos/setupos/`
+  - Installation images and `SHA256SUMS`
+
+<Warning>
+Building IC-OS images requires significant disk space (10-15 GB) and can take 30-60 minutes depending on your system.
+</Warning>
+
+## Building Everything
+
+To build all components in a single command:
+
+```bash
+./ci/container/build-ic.sh -b -c -i
+```
+
+## Release vs Non-Release Builds
+
+### Release Builds (Default)
+
+By default, the script produces release builds with stamping enabled:
+
+```bash
+./ci/container/build-ic.sh -b  # Release build
+```
+
+Release builds:
+- Include version stamping from `git rev-parse HEAD`
+- Use Bazel config: `--config=stamped`
+- Intended for `master` or `rc--*` branches
+- Produce reproducible artifacts
+
+### Non-Release Builds
+
+For development and testing on non-protected branches:
+
+```bash
+./ci/container/build-ic.sh -b --no-release
+```
+
+Non-release builds:
+- Skip version stamping
+- Faster build times
+- Intended for development branches
+
+<Note>
+The script automatically warns which build type is being used and pauses for 2 seconds before proceeding.
+</Note>
+
+## Build Process Details
+
+### Bazel Configuration
+
+The build uses common Bazel arguments:
+
+```bash
+BAZEL_COMMON_ARGS=(
+    --config=local
+    --color=yes
+)
+```
+
+For release builds, additional stamping configuration is added:
+
+```bash
+BAZEL_COMMON_ARGS+=(--config=stamped)
+```
+
+### Artifact Extraction
+
+After building, the script queries Bazel for output files and copies them to the appropriate directories:
+
+```bash
+bazel cquery "${BAZEL_COMMON_ARGS[@]}" --output=files "$query"
+```
+
+Artifacts are automatically organized by type:
+
+<CodeGroup>
+```bash GuestOS Images
+*guestos*disk -> artifacts/icos/guestos/disk
+*guestos*update -> artifacts/icos/guestos/update
+*guestos*recovery* -> artifacts/icos/guestos/update-img-recovery
+```
+
+```bash HostOS Images
+*hostos*disk -> artifacts/icos/hostos/disk
+*hostos*update -> artifacts/icos/hostos/update
+```
+
+```bash Binaries and Canisters
+*binaries* -> artifacts/release
+*canisters* -> artifacts/canisters
+```
+</CodeGroup>
+
+## Build Verification
+
+After a successful build, checksum files are displayed:
+
+### Binaries Verification
+
+```bash
+cat artifacts/release/SHA256SUMS
+```
+
+### Canisters Verification
+
+```bash
+cat artifacts/canisters/SHA256SUMS
+```
+
+### IC-OS Verification
+
+```bash
+cat artifacts/icos/guestos/update/SHA256SUMS
+cat artifacts/icos/hostos/update/SHA256SUMS
+cat artifacts/icos/setupos/SHA256SUMS
+```
+
+<Note>
+These checksums are critical for verifying reproducible builds. See [Build Verification](/build/verification) for more details.
+</Note>
+
+## Direct Bazel Builds
+
+For advanced users, you can invoke Bazel directly:
+
+### Build Specific Targets
+
+```bash
+bazel build //rs/replica:replica
+bazel build //rs/canister_sandbox:canister_sandbox  
+bazel build //publish/binaries:bundle
+```
+
+### Build with Custom Configuration
+
+```bash
+bazel build --config=local --config=stamped //publish/binaries:bundle
+```
+
+### Query Available Targets
+
+```bash
+bazel query //publish/...
+bazel query //rs/replica/...
+```
+
+## Troubleshooting
+
+### Clean Build Cache
+
+If you encounter build issues, clean the Bazel cache:
+
+```bash
+bazel clean --expunge
+```
+
+### Disk Space Issues
+
+If running out of disk space:
+
+```bash
+# Remove old artifacts
+rm -rf artifacts/
+
+# Clean Bazel cache
+bazel clean
+
+# Check disk usage
+du -sh ~/.cache/bazel
+```
+
+### Git Working Directory Not Clean
+
+The build script requires a clean Git state:
+
+```bash
+# Check status
+git status
+
+# Stash or commit changes
+git stash
+# or
+git add . && git commit -m "WIP"
+```
+
+### Container Issues
+
+If the container fails to start:
+
+```bash
+# Verify Podman is running
+podman info
+
+# Remove old containers
+podman system prune
+```
+
+## Build Output Summary
+
+Successful builds display a summary:
+
+```bash
+##### Binaries SHA256SUMS #####
+[checksum output]
+
+##### Canisters SHA256SUMS #####
+[checksum output]
+
+Build complete for revision [git-commit-hash]
+```
+
+## Next Steps
+
+- [Bazel Overview](/build/bazel-overview) - Learn about Bazel configuration
+- [Build Verification](/build/verification) - Verify reproducible builds
+- [IC-OS README](https://github.com/dfinity/ic/blob/master/ic-os/README.adoc) - Detailed IC-OS build documentation

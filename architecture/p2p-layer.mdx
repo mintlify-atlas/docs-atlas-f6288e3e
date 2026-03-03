@@ -1,0 +1,272 @@
+---
+title: P2P Networking Layer
+description: Architecture of the Internet Computer's peer-to-peer networking infrastructure
+---
+
+## Overview
+
+The peer-to-peer (P2P) layer of the Internet Computer is responsible for message delivery within subnets of nodes. Each subnet operates a separate peer-to-peer network, and nodes within each subnet use this network to exchange messages with each other.
+
+## Architecture
+
+The P2P layer provides the foundation for multiple higher-level components:
+
+- **Consensus Protocol**: Exchanges consensus artifacts between nodes
+- **State Sync Protocol**: Synchronizes state between replicas
+- **Artifact Distribution**: Manages the propagation of various artifacts within the subnet
+
+### Transport Layer
+
+The P2P layer uses **QUIC** as its primary transport protocol, providing:
+
+- **Encrypted connections** via TLS 1.3
+- **Multiplexed streams** allowing multiple concurrent RPCs
+- **Connection pooling** with automatic reconnection
+- **Per-stream isolation** for independent request handling
+
+```rust
+// Source: rs/p2p/quic_transport/src/lib.rs
+pub struct QuicTransport {
+    log: ReplicaLogger,
+    conn_handles: Arc<RwLock<HashMap<NodeId, ConnectionHandle>>>,
+    shutdown: Arc<RwLock<Option<Shutdown>>>,
+}
+```
+
+### Key Components
+
+#### 1. QUIC Transport (`rs/p2p/quic_transport/`)
+
+Provides connectivity to all peers in a subnet with RPC capabilities:
+
+- **Connection Manager**: Keeps peers connected based on topology
+- **Request Handler**: Accepts streams on active connections
+- **Connection Handle**: Provides RPC and push interfaces to peers
+
+**Guarantees**:
+- If a peer is reachable, part of the topology, and well-behaving, transport will eventually open a connection
+- Connections may break; users must implement retry logic
+
+**Configuration**:
+```rust
+const MAX_MESSAGE_SIZE_BYTES: usize = 128 * 1024 * 1024; // 128 MB
+```
+
+#### 2. Peer Manager (`rs/p2p/peer_manager/`)
+
+Manages subnet membership and topology:
+
+- Periodically checks the registry for subnet membership changes
+- Determines membership based on latest registry version and consensus state
+- Publishes subnet topology via tokio watch channel
+- Updates every 3 seconds
+
+```rust
+// Source: rs/p2p/peer_manager/src/lib.rs
+const TOPOLOGY_UPDATE_INTERVAL: Duration = Duration::from_secs(3);
+
+pub struct SubnetTopology {
+    subnet_nodes: HashMap<NodeId, SocketAddr>,
+    earliest_registry_version: RegistryVersion,
+    latest_registry_version: RegistryVersion,
+}
+```
+
+#### 3. Consensus Manager (`rs/p2p/consensus_manager/`)
+
+Handles artifact broadcast for consensus:
+
+- **Sender Side**: Broadcasts locally produced artifacts to peers
+- **Receiver Side**: Receives and validates artifacts from peers
+- Uses **slot-based protocol** for efficient artifact management
+- Supports multiple artifact types via generic implementation
+
+```rust
+// Source: rs/p2p/consensus_manager/src/lib.rs
+pub struct AbortableBroadcastChannel<T: IdentifiableArtifact> {
+    pub outbound_tx: Sender<ArtifactTransmit<T>>,
+    pub inbound_rx: Receiver<UnvalidatedArtifactMutation<T>>,
+    pub inbound_tx: Sender<UnvalidatedArtifactMutation<T>>,
+}
+```
+
+#### 4. State Sync Manager (`rs/p2p/state_sync_manager/`)
+
+Implements state synchronization across replicas:
+
+**API Endpoints**:
+- `/chunk` - Serves individual state chunks to peers
+- `/advert` - Receives state advertisements from peers
+
+**Behavior**:
+- Periodic broadcasting of latest state advert (every 5 seconds)
+- Checks peer advertisements against local state
+- Initiates state sync when necessary
+- Only one active state sync at a time
+
+```rust
+// Source: rs/p2p/state_sync_manager/src/lib.rs
+const ADVERT_BROADCAST_INTERVAL: Duration = Duration::from_secs(5);
+const ADVERT_BROADCAST_TIMEOUT: Duration = Duration::from_secs(3);
+```
+
+#### 5. Artifact Downloader (`rs/p2p/artifact_downloader/`)
+
+Manages downloading and assembling artifacts from peers:
+
+- Downloads artifacts in parallel from multiple sources
+- Supports stripped artifacts for bandwidth optimization
+- Handles chunk assembly and validation
+- Implements retry logic for failed downloads
+
+## Communication Model
+
+### Topology-Driven Connectivity
+
+The P2P layer uses a **topology watcher** pattern:
+
+1. Peer Manager monitors registry for subnet membership
+2. Publishes topology updates via watch channel
+3. Transport layer maintains connections to all topology members
+4. Automatic reconnection on topology changes
+
+This design separates peer discovery from core P2P protocols, enabling reuse across different consensus algorithms.
+
+### RPC Interface
+
+The transport provides a simple RPC interface:
+
+```rust
+#[async_trait]
+pub trait Transport: Send + Sync {
+    async fn rpc(
+        &self,
+        peer_id: &NodeId,
+        request: Request<Bytes>,
+    ) -> Result<Response<Bytes>, P2PError>;
+
+    fn peers(&self) -> Vec<(NodeId, ConnId)>;
+}
+```
+
+All RPCs use HTTP-like `Request` and `Response` types, enabling easy integration with Axum-based HTTP servers.
+
+### Message Routing
+
+Incoming requests are routed based on URI:
+
+```rust
+let router = Router::new()
+    .route("/consensus", consensus_handler)
+    .route("/state_sync/chunk", chunk_handler)
+    .route("/state_sync/advert", advert_handler);
+```
+
+## Security
+
+### TLS 1.3 Encryption
+
+All peer-to-peer communication uses TLS 1.3:
+
+- Mutual TLS authentication using registry-based certificates
+- Node identity verification via crypto component
+- Forward secrecy for all connections
+
+### Message Size Limits
+
+Protection against resource exhaustion:
+
+- Maximum message size: **128 MB**
+- Rationale: Consensus summary blocks for 40-node subnets can exceed 5 MB
+
+## Performance Considerations
+
+### Connection Multiplexing
+
+QUIC streams enable:
+- Multiple concurrent RPCs on single connection
+- Independent flow control per stream
+- Reduced connection establishment overhead
+
+### Stream Cancellation
+
+Efficient bandwidth usage via explicit cancellation:
+
+```rust
+struct ResetStreamOnDrop {
+    send_stream: SendStream,
+    ongoing_streams: IntGauge,
+}
+
+impl Drop for ResetStreamOnDrop {
+    fn drop(&mut self) {
+        // Send QUIC reset frame instead of finish
+        let _ = self.send_stream.reset(QUIC_STREAM_CANCELLED);
+        self.ongoing_streams.dec();
+    }
+}
+```
+
+### Proximity-Aware Routing
+
+The P2P layer includes proximity detection:
+
+```rust
+pub enum PeerLocation {
+    Local,  // Same datacenter
+    Remote, // Different datacenter
+}
+```
+
+This enables preferential selection of nearby peers for performance-critical operations.
+
+## Metrics and Observability
+
+### Key Metrics
+
+- **Connection States**: Active connections per peer
+- **RPC Latencies**: Request/response times by endpoint
+- **Message Throughput**: Bytes sent/received per peer
+- **Retry Counts**: Failed connection attempts
+- **Stream Statistics**: Active streams, cancellations
+
+### Logging
+
+Structured logging throughout with replica logger:
+
+```rust
+info!(log, "Starting Quic transport.");
+warn!(log, "Error sending rpc request to {}: {:?}", peer_id, err);
+```
+
+## Implementation Details
+
+### Async Runtime
+
+The P2P layer runs on Tokio runtime:
+
+- Background tasks for connection management
+- Async I/O for all network operations  
+- Graceful shutdown via cancellation tokens
+
+### Error Handling
+
+```rust
+pub struct P2PError {
+    inner: Box<dyn Error + Send + Sync>,
+}
+```
+
+Errors are propagated without expensive backtraces for performance.
+
+## Source Code References
+
+- **QUIC Transport**: `rs/p2p/quic_transport/src/lib.rs:1-411`
+- **Peer Manager**: `rs/p2p/peer_manager/src/lib.rs:1-325`
+- **Consensus Manager**: `rs/p2p/consensus_manager/src/lib.rs:1-197`
+- **State Sync Manager**: `rs/p2p/state_sync_manager/src/lib.rs:1-353`
+
+## Related Documentation
+
+- [Boundary Nodes](/architecture/boundary-nodes) - External network interface
+- [XNet Messaging](/architecture/xnet-messaging) - Cross-subnet communication

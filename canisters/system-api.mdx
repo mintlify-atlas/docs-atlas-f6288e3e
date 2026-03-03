@@ -1,0 +1,622 @@
+---
+title: "System API"
+description: "The System API functions available to canisters for interacting with the Internet Computer"
+---
+
+# System API
+
+The System API is the interface between canister code and the Internet Computer platform. It provides functions for message handling, inter-canister calls, state management, and more.
+
+## Overview
+
+All System API functions are prefixed with `ic0.` and are imported from the `ic0` module in WebAssembly. They provide low-level access to IC functionality.
+
+From `rs/rust_canisters/dfn_core/src/api.rs:29-89`:
+
+```rust
+pub mod ic0 {
+    #[link(wasm_import_module = "ic0")]
+    unsafe extern "C" {
+        pub fn canister_self_copy(dst: u32, offset: u32, size: u32);
+        pub fn msg_arg_data_copy(dst: u32, offset: u32, size: u32);
+        pub fn msg_caller_copy(dst: u32, offset: u32, size: u32);
+        pub fn msg_reply_data_append(offset: u32, size: u32);
+        pub fn msg_reply();
+        pub fn msg_reject(src: u32, size: u32);
+        // ... and many more
+    }
+}
+```
+
+## Message Inspection
+
+### Caller Information
+
+#### ic0.msg_caller_size
+
+Returns the size of the caller's principal:
+
+```rust
+pub fn caller() -> PrincipalId {
+    let len: u32 = unsafe { ic0::msg_caller_size() };
+    let mut bytes = vec![0; len as usize];
+    unsafe {
+        ic0::msg_caller_copy(bytes.as_mut_ptr() as u32, 0, len);
+    }
+    PrincipalId::try_from(bytes).unwrap()
+}
+```
+
+#### ic0.msg_caller_copy
+
+Copies the caller's principal into Wasm memory.
+
+### Message Payload
+
+#### ic0.msg_arg_data_size
+
+Returns the size of the message payload in bytes.
+
+#### ic0.msg_arg_data_copy
+
+Copies message payload into Wasm memory:
+
+```rust
+pub fn arg_data() -> Vec<u8> {
+    let len: u32 = unsafe { ic0::msg_arg_data_size() };
+    let mut bytes = vec![0; len as usize];
+    unsafe {
+        ic0::msg_arg_data_copy(bytes.as_mut_ptr() as u32, 0, len);
+    }
+    bytes
+}
+```
+
+### Canister Identity
+
+#### ic0.canister_self_size
+
+Returns the size of this canister's principal.
+
+#### ic0.canister_self_copy
+
+Copies this canister's principal:
+
+```rust
+pub fn id() -> CanisterId {
+    let len: u32 = unsafe { ic0::canister_self_size() };
+    let mut bytes = vec![0; len as usize];
+    unsafe {
+        ic0::canister_self_copy(bytes.as_mut_ptr() as u32, 0, len);
+    }
+    CanisterId::try_from(bytes).unwrap()
+}
+```
+
+## Response Handling
+
+### Replying to Calls
+
+#### ic0.msg_reply_data_append
+
+Appends data to the response payload:
+
+```rust
+pub fn reply(payload: &[u8]) {
+    unsafe {
+        ic0::msg_reply_data_append(
+            payload.as_ptr() as u32,
+            payload.len() as u32
+        );
+        ic0::msg_reply();
+    }
+}
+```
+
+#### ic0.msg_reply
+
+Sends the response and commits the state changes.
+
+<Note>
+You must call `ic0.msg_reply()` or `ic0.msg_reject()` exactly once per message to avoid trapping.
+</Note>
+
+### Rejecting Calls
+
+#### ic0.msg_reject
+
+Rejects the current call with an error message:
+
+```rust
+pub fn reject(err_message: &str) {
+    let err_message = err_message.as_bytes();
+    unsafe {
+        ic0::msg_reject(
+            err_message.as_ptr() as u32,
+            err_message.len() as u32
+        );
+    }
+}
+```
+
+#### ic0.msg_reject_code
+
+Returns the reject code when processing a response:
+
+```rust
+pub fn reject_code() -> i32 {
+    unsafe { ic0::msg_reject_code() }
+}
+```
+
+Reject codes:
+- `0` - No error (success)
+- `1` - Canister error
+- `2` - Canister rejected
+- `3` - Destination invalid
+- `4` - Canister not found
+- `5` - System error
+
+## Inter-Canister Calls
+
+### Initiating Calls
+
+#### ic0.call_new
+
+Begins a new inter-canister call:
+
+```rust
+unsafe {
+    ic0::call_new(
+        callee_id.as_ptr() as u32,
+        callee_id.len() as u32,
+        method_name.as_ptr() as u32,
+        method_name.len() as u32,
+        reply_callback as usize,
+        reply_env as u32,
+        reject_callback as usize,
+        reject_env as u32,
+    );
+}
+```
+
+#### ic0.call_data_append
+
+Appends data to the call payload:
+
+```rust
+unsafe {
+    ic0::call_data_append(
+        data.as_ptr() as u32,
+        data.len() as u32
+    );
+}
+```
+
+#### ic0.call_perform
+
+Executes the configured call:
+
+```rust
+let result = unsafe { ic0::call_perform() };
+if result != 0 {
+    // Call failed to send
+}
+```
+
+Return values:
+- `0` - Call successfully queued
+- Non-zero - Error code
+
+### Call Callbacks
+
+#### ic0.call_on_cleanup
+
+Registers a cleanup callback for when a call is cancelled:
+
+```rust
+unsafe {
+    ic0::call_on_cleanup(cleanup_fn as usize, env as u32);
+}
+```
+
+### Cycles in Calls
+
+#### ic0.call_cycles_add
+
+Attaches cycles to an inter-canister call (64-bit):
+
+```rust
+pub fn call_cycles_add(amount: u64) {
+    unsafe {
+        ic0::call_cycles_add(amount);
+    }
+}
+```
+
+#### ic0.call_cycles_add128
+
+Attaches cycles using 128-bit precision:
+
+```rust
+pub fn call_cycles_add128(amount_high: u64, amount_low: u64) {
+    unsafe {
+        ic0::call_cycles_add128(amount_high, amount_low);
+    }
+}
+```
+
+## Cycles Management
+
+### Checking Balances
+
+#### ic0.canister_cycle_balance
+
+Returns the canister's cycles balance (64-bit):
+
+```rust
+pub fn canister_cycle_balance() -> u64 {
+    unsafe { ic0::canister_cycle_balance() }
+}
+```
+
+#### ic0.canister_cycle_balance128
+
+Returns the balance with 128-bit precision:
+
+```rust
+pub fn canister_cycle_balance128() -> Vec<u8> {
+    let size = 16;
+    let mut buf = vec![0u8; size];
+    unsafe { ic0::canister_cycle_balance128(buf.as_mut_ptr() as i32) }
+    buf
+}
+```
+
+### Message Cycles
+
+#### ic0.msg_cycles_available
+
+Returns cycles sent with the current message (64-bit):
+
+```rust
+pub fn msg_cycles_available() -> u64 {
+    unsafe { ic0::msg_cycles_available() }
+}
+```
+
+#### ic0.msg_cycles_available128
+
+Returns available cycles with 128-bit precision:
+
+```rust
+pub fn msg_cycles_available128() -> u128 {
+    let mut buf = vec![0u8; 16];
+    unsafe { ic0::msg_cycles_available128(buf.as_mut_ptr() as i32) }
+    u128::from_le_bytes(buf.try_into().unwrap())
+}
+```
+
+#### ic0.msg_cycles_accept
+
+Accepts cycles from the current message (64-bit):
+
+```rust
+pub fn msg_cycles_accept(amount: u64) -> u64 {
+    unsafe { ic0::msg_cycles_accept(amount) }
+}
+```
+
+#### ic0.msg_cycles_refunded
+
+Returns cycles refunded from a rejected call:
+
+```rust
+pub fn msg_cycles_refunded() -> u64 {
+    unsafe { ic0::msg_cycles_refunded() }
+}
+```
+
+## Stable Memory
+
+Stable memory persists across canister upgrades, unlike regular Wasm memory.
+
+### 32-bit Interface
+
+#### ic0.stable_size
+
+Returns stable memory size in Wasm pages (64KB each):
+
+```rust
+pub fn stable_memory_size_in_pages() -> u32 {
+    unsafe { ic0::stable_size() }
+}
+```
+
+#### ic0.stable_grow
+
+Grows stable memory by the specified number of pages:
+
+```rust
+let old_size = unsafe { ic0::stable_grow(additional_pages) };
+if old_size == -1 {
+    // Growth failed
+}
+```
+
+#### ic0.stable_read
+
+Reads from stable memory into Wasm memory:
+
+```rust
+unsafe {
+    ic0::stable_read(
+        dst_wasm_addr,
+        src_stable_offset,
+        size
+    );
+}
+```
+
+#### ic0.stable_write
+
+Writes from Wasm memory to stable memory:
+
+```rust
+unsafe {
+    ic0::stable_write(
+        dst_stable_offset,
+        src_wasm_addr,
+        size
+    );
+}
+```
+
+### 64-bit Interface
+
+For accessing stable memory beyond 4GB:
+
+#### ic0.stable64_size
+
+Returns size using 64-bit page count.
+
+#### ic0.stable64_grow
+
+Grows stable memory using 64-bit page count.
+
+#### ic0.stable64_read
+
+Reads using 64-bit offsets and sizes.
+
+#### ic0.stable64_write
+
+Writes using 64-bit offsets and sizes.
+
+<Tip>
+Use the 64-bit API for canisters that may need more than 4GB of stable memory.
+</Tip>
+
+## Time and Randomness
+
+### ic0.time
+
+Returns current timestamp in nanoseconds since Unix epoch:
+
+```rust
+pub fn time_nanos() -> u64 {
+    unsafe { ic0::time() }
+}
+```
+
+<Note>
+The timestamp is the same for all messages in a consensus round, ensuring determinism.
+</Note>
+
+### ic0.performance_counter
+
+Returns a monotonically increasing counter for performance measurement:
+
+```rust
+pub fn performance_counter(counter_type: u32) -> u64 {
+    unsafe { ic0::performance_counter(counter_type) }
+}
+```
+
+Counter types:
+- `0` - Instruction counter
+
+## Canister Status
+
+### ic0.canister_status
+
+Returns the current canister status:
+
+```rust
+pub fn canister_status() -> CanisterStatus {
+    match unsafe { ic0::canister_status() } {
+        1 => CanisterStatus::Running,
+        2 => CanisterStatus::Stopping,
+        3 => CanisterStatus::Stopped,
+        _ => panic!("Invalid canister status"),
+    }
+}
+```
+
+### ic0.canister_version
+
+Returns the canister's current version number:
+
+```rust
+pub fn canister_version() -> u64 {
+    unsafe { ic0::canister_version() }
+}
+```
+
+The version increments with each change (upgrade, settings update, etc.).
+
+## Certified Data
+
+### ic0.certified_data_set
+
+Sets the certified data (max 32 bytes):
+
+```rust
+pub fn set_certified_data(data: &[u8]) {
+    unsafe {
+        ic0::certified_data_set(
+            data.as_ptr() as u32,
+            data.len() as u32
+        )
+    }
+}
+```
+
+### ic0.data_certificate_present
+
+Checks if a certificate is available (only in query calls):
+
+```rust
+let present = unsafe { ic0::data_certificate_present() };
+```
+
+### ic0.data_certificate_copy
+
+Copies the certificate for the certified data:
+
+```rust
+pub fn data_certificate() -> Option<Vec<u8>> {
+    if unsafe { ic0::data_certificate_present() } == 0 {
+        return None;
+    }
+    let n = unsafe { ic0::data_certificate_size() };
+    let mut buf = vec![0u8; n as usize];
+    unsafe {
+        ic0::data_certificate_copy(buf.as_mut_ptr() as u32, 0, n);
+    }
+    Some(buf)
+}
+```
+
+## Debug and Development
+
+### ic0.debug_print
+
+Prints a message to the replica logs:
+
+```rust
+pub fn print<S: AsRef<str>>(s: S) {
+    let s = s.as_ref();
+    unsafe {
+        ic0::debug_print(s.as_ptr() as u32, s.len() as u32);
+    }
+}
+```
+
+<Warning>
+Debug prints are visible in replica logs but not in production. Use for development only.
+</Warning>
+
+### ic0.trap
+
+Traps execution with an error message:
+
+```rust
+pub fn trap_with(message: &str) -> ! {
+    unsafe {
+        ic0::trap(message.as_ptr() as u32, message.len() as u32);
+        unreachable!()
+    }
+}
+```
+
+Trapping:
+- Aborts current execution
+- Rolls back state changes
+- Returns an error to the caller
+- Refunds unused cycles
+
+## Advanced Features
+
+### ic0.is_controller
+
+Checks if a principal is a controller:
+
+```rust
+let is_controller = unsafe {
+    ic0::is_controller(
+        principal.as_ptr() as u32,
+        principal.len() as u32
+    )
+};
+```
+
+### ic0.in_replicated_execution
+
+Returns whether execution is replicated:
+
+```rust
+let is_replicated = unsafe { ic0::in_replicated_execution() };
+```
+
+Returns:
+- `1` - Update call (replicated)
+- `0` - Query call (not replicated)
+
+### ic0.msg_deadline
+
+Returns the message deadline in nanoseconds:
+
+```rust
+let deadline = unsafe { ic0::msg_deadline() };
+```
+
+### ic0.call_with_best_effort_response
+
+Marks a call for best-effort delivery:
+
+```rust
+unsafe {
+    ic0::call_with_best_effort_response(timeout_seconds);
+}
+```
+
+## Best Practices
+
+### Error Handling
+
+1. **Always handle call_perform errors**
+2. **Check reject codes** in callbacks
+3. **Use trap sparingly** - it's expensive
+4. **Validate inputs** before expensive operations
+
+### Cycles Management
+
+1. **Check available cycles** before accepting
+2. **Monitor balance** to avoid freezing
+3. **Refund excess cycles** when appropriate
+4. **Use 128-bit APIs** for large amounts
+
+### Stable Memory
+
+1. **Serialize data carefully** before writing
+2. **Version your data structures** for upgrades
+3. **Use 64-bit API** for large memories
+4. **Validate on read** to handle corruption
+
+### Performance
+
+1. **Minimize System API calls** in tight loops
+2. **Batch stable memory operations**
+3. **Use performance_counter** to measure
+4. **Cache frequently accessed data**
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Inter-Canister Calls" icon="arrows-left-right" href="/canisters/inter-canister-calls">
+    Learn about canister communication patterns
+  </Card>
+  <Card title="Canister Overview" icon="cube" href="/canisters/overview">
+    Return to canister fundamentals
+  </Card>
+</CardGroup>

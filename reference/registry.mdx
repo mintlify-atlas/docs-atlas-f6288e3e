@@ -1,0 +1,540 @@
+---
+title: Registry Reference
+description: Registry system for distributed configuration in the Internet Computer
+---
+
+The registry system provides a versioned, distributed key-value store for Internet Computer configuration data. It stores critical metadata including node information, subnet composition, cryptographic keys, and protocol parameters.
+
+## Overview
+
+The registry is a replicated data store that:
+
+- Provides **versioned** access to configuration data
+- Ensures **eventual consistency** across all replicas
+- Supports **efficient local caching** with background updates
+- Maintains **cryptographic certification** of registry data
+- Enables **atomic multi-version queries**
+
+## Architecture
+
+```
+┌─────────────────────┐
+│  Registry Canister  │  (Source of truth)
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Registry Client    │  (Local cache)
+├─────────────────────┤
+│  Data Provider      │  (Fetch updates)
+├─────────────────────┤
+│  Local Store        │  (Persistent cache)
+└─────────────────────┘
+```
+
+## Core Crates
+
+### ic-registry-client
+
+Client library for querying registry data.
+
+**Location**: `rs/registry/client/`
+
+**Main Type**: `RegistryClientImpl`
+
+```rust
+use ic_registry_client::client::RegistryClientImpl;
+use ic_interfaces_registry::RegistryClient;
+
+// Create client with data provider
+let client = RegistryClientImpl::new(
+    data_provider,
+    metrics_registry,
+);
+
+// Start background polling
+client.fetch_and_start_polling()?;
+
+// Query data at specific version
+let value = client.get_value("node_record_123", version)?;
+let latest = client.get_latest_version();
+```
+
+**Key Methods**:
+
+```rust
+impl RegistryClient for RegistryClientImpl {
+    // Get value at specific version
+    fn get_versioned_value(
+        &self,
+        key: &str,
+        version: RegistryVersion,
+    ) -> RegistryClientVersionedResult<Vec<u8>>;
+    
+    // Get all keys with prefix
+    fn get_key_family(
+        &self,
+        key_prefix: &str,
+        version: RegistryVersion,
+    ) -> Result<Vec<String>, RegistryClientError>;
+    
+    // Get latest known version
+    fn get_latest_version(&self) -> RegistryVersion;
+    
+    // Get timestamp when version became available
+    fn get_version_timestamp(
+        &self,
+        registry_version: RegistryVersion,
+    ) -> Option<Time>;
+}
+```
+
+**Polling Mechanism**:
+
+The client polls the data provider every 5 seconds (configurable via `POLLING_PERIOD`):
+
+```rust
+// Automatic background polling
+client.fetch_and_start_polling()?;
+
+// Manual single poll
+client.poll_once()?;
+
+// Poll until latest version stabilizes
+client.try_polling_latest_version(retries)?;
+```
+
+**Internal Structure**:
+
+```rust
+pub struct RegistryClientImpl {
+    cache: Arc<RwLock<CacheState>>,
+    data_provider: Arc<dyn RegistryDataProvider>,
+    metrics: Arc<Metrics>,
+    poll_thread: Arc<RwLock<Option<PollThread>>>,
+}
+```
+
+### ic-interfaces-registry
+
+Registry trait definitions.
+
+**Location**: `rs/interfaces/registry/`
+
+**Core Traits**:
+
+```rust
+// Client interface for queries
+pub trait RegistryClient: Send + Sync {
+    fn get_versioned_value(
+        &self,
+        key: &str,
+        version: RegistryVersion,
+    ) -> RegistryClientVersionedResult<Vec<u8>>;
+    
+    fn get_key_family(
+        &self,
+        key_prefix: &str,
+        version: RegistryVersion,
+    ) -> Result<Vec<String>, RegistryClientError>;
+    
+    fn get_latest_version(&self) -> RegistryVersion;
+}
+
+// Data provider for fetching updates
+pub trait RegistryDataProvider: Send + Sync {
+    fn get_updates_since(
+        &self,
+        version: RegistryVersion,
+    ) -> Result<Vec<RegistryRecord>, RegistryDataProviderError>;
+}
+```
+
+**Data Types**:
+
+```rust
+pub struct RegistryRecord {
+    pub key: String,
+    pub version: RegistryVersion,
+    pub value: Option<Vec<u8>>,
+}
+
+pub struct RegistryVersionedResult<T> {
+    pub value: Option<T>,
+    pub version: RegistryVersion,
+}
+```
+
+### ic-registry-client-helpers
+
+Helper functions for common registry queries.
+
+**Location**: `rs/registry/helpers/`
+
+**Common Helpers**:
+
+```rust
+use ic_registry_client_helpers::subnet::SubnetRegistry;
+use ic_registry_client_helpers::node::NodeRegistry;
+use ic_registry_client_helpers::crypto::CryptoRegistry;
+
+// Subnet queries
+trait SubnetRegistry {
+    fn get_subnet_record(
+        &self,
+        subnet_id: SubnetId,
+        version: RegistryVersion,
+    ) -> Result<SubnetRecord, RegistryClientError>;
+    
+    fn get_subnet_membership(
+        &self,
+        subnet_id: SubnetId,
+        version: RegistryVersion,
+    ) -> Result<Vec<NodeId>, RegistryClientError>;
+}
+
+// Node queries
+trait NodeRegistry {
+    fn get_node_record(
+        &self,
+        node_id: NodeId,
+        version: RegistryVersion,
+    ) -> Result<NodeRecord, RegistryClientError>;
+    
+    fn get_transport_info(
+        &self,
+        node_id: NodeId,
+        version: RegistryVersion,
+    ) -> Result<ConnectionEndpoint, RegistryClientError>;
+}
+
+// Crypto queries
+trait CryptoRegistry {
+    fn get_threshold_signing_public_key(
+        &self,
+        subnet_id: SubnetId,
+        version: RegistryVersion,
+    ) -> Result<PublicKey, RegistryClientError>;
+}
+```
+
+**Additional Helpers**:
+
+- `routing_table` - Routing table queries
+- `firewall` - Firewall configuration
+- `ecdsa_keys` - ECDSA key management
+- `chain_keys` - Chain key configuration
+- `unassigned_nodes` - Node pool management
+- `node_operator` - Node operator records
+- `blessed_replica_version` - Approved replica versions
+- `hostos_version` - Host OS version tracking
+
+### ic-registry-local-store
+
+Persistent local storage for registry data.
+
+**Location**: `rs/registry/local_store/`
+
+Provides:
+- Persistent caching of registry versions
+- Fast local lookups
+- Changelog storage
+
+### ic-registry-transport
+
+Network transport layer for registry updates.
+
+**Location**: `rs/registry/transport/`
+
+**Features**:
+- Protobuf serialization
+- High-capacity transport support
+- Changelog compression
+
+### ic-registry-canister
+
+Registry canister implementation (source of truth).
+
+**Location**: `rs/registry/canister/`
+
+**Capabilities**:
+- Atomic mutations via proposals
+- Version management
+- Access control
+- Changelog generation
+
+### ic-registry-proto-data-provider
+
+Data provider implementation using protobuf.
+
+**Location**: `rs/registry/proto_data_provider/`
+
+Fetches updates from the registry canister.
+
+### ic-registry-fake
+
+Fake registry implementation for testing.
+
+**Location**: `rs/registry/fake/`
+
+```rust
+use ic_registry_fake::FakeRegistryClient;
+
+let fake_registry = FakeRegistryClient::new(Arc::new(ProtoRegistryDataProvider::new()));
+fake_registry.update(
+    key,
+    version,
+    value,
+);
+```
+
+## Registry Data Model
+
+### Versioning
+
+Each registry mutation creates a new version:
+
+```rust
+pub type RegistryVersion = AmountOf<RegistryVersionTag, u64>;
+
+// Version 0 is always empty
+pub const ZERO_REGISTRY_VERSION: RegistryVersion = RegistryVersion::new(0);
+```
+
+**Version Properties**:
+
+1. Versions are monotonically increasing
+2. Version 0 represents the empty registry
+3. All keys at a version are simultaneously available
+4. Queries are immutable for a given version
+
+### Key-Value Structure
+
+Registry keys follow hierarchical naming:
+
+```
+node_record_<node_id>
+subnet_record_<subnet_id>
+subnet_list
+crypto_threshold_signing_public_key_<subnet_id>
+routing_table
+canister_migrations
+```
+
+Values are serialized protobuf messages.
+
+### Changelog Model
+
+The registry maintains a changelog of all mutations:
+
+```rust
+pub struct RegistryDelta {
+    pub key: String,
+    pub values: Vec<RegistryValue>,
+}
+
+pub struct RegistryValue {
+    pub value: Vec<u8>,
+    pub version: RegistryVersion,
+    pub deletion_marker: bool,
+}
+```
+
+## Query Patterns
+
+### Simple Value Query
+
+```rust
+let version = registry.get_latest_version();
+let bytes = registry.get_value("subnet_list", version)?;
+let subnet_list: SubnetListRecord = decode_protobuf(&bytes)?;
+```
+
+### Family Query
+
+```rust
+// Get all node records
+let node_keys = registry.get_key_family("node_record_", version)?;
+for key in node_keys {
+    let node_record = registry.get_value(&key, version)?;
+    // Process node
+}
+```
+
+### Versioned Query
+
+```rust
+// Compare values across versions
+let old_value = registry.get_versioned_value("key", old_version)?;
+let new_value = registry.get_versioned_value("key", new_version)?;
+
+if old_value.value != new_value.value {
+    println!("Value changed between v{} and v{}", 
+        old_version, new_version);
+}
+```
+
+### Helper-Based Query
+
+```rust
+use ic_registry_client_helpers::subnet::SubnetRegistry;
+
+let subnet_record = registry.get_subnet_record(
+    subnet_id,
+    version,
+)?;
+
+let membership = registry.get_subnet_membership(
+    subnet_id,
+    version,
+)?;
+```
+
+## Error Handling
+
+```rust
+pub enum RegistryClientError {
+    // Version not available locally
+    VersionNotAvailable { version: RegistryVersion },
+    
+    // Data provider failure
+    DataProviderQueryFailed {
+        source: RegistryDataProviderError,
+    },
+    
+    // Polling errors
+    PollLockFailed { error: String },
+    PollingLatestVersionFailed { retries: usize },
+    
+    // Deserialization errors
+    DecodeError { error: String },
+}
+
+pub enum RegistryDataProviderError {
+    Transfer { source: String },
+    Timeout,
+}
+```
+
+## Registry Invariants
+
+The registry client guarantees:
+
+### Invariant 1: Fully Available Versions
+
+```
+∀ k: get_value(k, get_latest_version()).is_ok()
+```
+
+All keys are queryable at the latest version.
+
+### Invariant 2: Known Zero State
+
+```
+∀ k: v = get_value(k, ZERO_REGISTRY_VERSION) => v.is_none()
+```
+
+Version 0 has no data.
+
+### Invariant 3: Deterministic Queries
+
+```
+∀ k, t: get_value(k, t) == get_value(k, t)
+```
+
+Repeated queries return identical results.
+
+## Metrics
+
+The registry client exposes metrics:
+
+```rust
+registry_version          // Current registry version
+registry_poll_duration    // Time to poll for updates
+registry_update_duration  // Time to apply updates
+```
+
+## Testing
+
+### Using FakeRegistryClient
+
+```rust
+use ic_registry_fake::FakeRegistryClient;
+
+#[test]
+fn test_with_fake_registry() {
+    let registry = FakeRegistryClient::new(data_provider);
+    
+    // Insert test data
+    registry.update(
+        "test_key",
+        RegistryVersion::from(1),
+        Some(test_value),
+    );
+    
+    // Query
+    let result = registry.get_value("test_key", RegistryVersion::from(1));
+    assert!(result.is_ok());
+}
+```
+
+### Using ProtoRegistryDataProvider
+
+```rust
+use ic_registry_proto_data_provider::ProtoRegistryDataProvider;
+
+let data_provider = ProtoRegistryDataProvider::new();
+data_provider.add(
+    key,
+    version,
+    value,
+);
+```
+
+## Related Crates
+
+### Supporting Crates
+
+- **ic-registry-keys** - Key name constants and builders
+- **ic-registry-routing-table** - Routing table types
+- **ic-registry-subnet-type** - Subnet type definitions
+- **ic-registry-subnet-features** - Subnet feature flags
+- **ic-registry-provisional-whitelist** - Whitelist management
+
+### Admin Tools
+
+- **ic-registry-admin** - Admin CLI tools
+- **ic-registry-regedit** - Registry editing utility
+
+## Common Registry Keys
+
+| Key Pattern | Description |
+|-------------|-------------|
+| `node_record_<id>` | Node configuration |
+| `subnet_record_<id>` | Subnet configuration |
+| `subnet_list` | List of all subnets |
+| `routing_table` | Canister routing |
+| `crypto_threshold_signing_public_key_<subnet_id>` | Threshold signing keys |
+| `replica_version_<version_id>` | Replica version metadata |
+| `blessed_replica_versions` | Approved versions |
+| `firewall_config` | Firewall rules |
+
+## Best Practices
+
+1. **Cache the latest version** - Avoid repeated `get_latest_version()` calls
+2. **Use helpers** - Leverage `ic-registry-client-helpers` for typed queries
+3. **Handle version lag** - Registry updates propagate asynchronously
+4. **Batch queries** - Query multiple keys at the same version for consistency
+5. **Monitor metrics** - Track registry version and poll duration
+
+## Related Documentation
+
+- [Types Reference](/reference/types) - Registry-related type definitions
+- [Interfaces Reference](/reference/interfaces) - Registry trait definitions
+- [Crates Overview](/reference/crates-overview) - Overall crate architecture
+
+## See Also
+
+- Source: `rs/registry/client/src/lib.rs`
+- Source: `rs/interfaces/registry/src/lib.rs`
+- [Registry Specification](https://internetcomputer.org/docs/current/references/ic-interface-spec#registry)

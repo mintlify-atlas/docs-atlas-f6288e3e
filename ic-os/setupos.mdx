@@ -1,0 +1,195 @@
+---
+title: SetupOS
+description: SetupOS is responsible for booting new replica nodes and installing HostOS and GuestOS
+---
+
+## Introduction
+
+**SetupOS** is an operating system designed for installing both the HostOS (hypervisor) and GuestOS (virtual machine). It enables Node Providers to independently onboard their nodes to the Internet Computer network.
+
+SetupOS is a one-time-use operating system that:
+- Validates hardware components
+- Tests network connectivity to the NNS
+- Prepares disk partitions
+- Installs HostOS and GuestOS
+- Configures the node for operation
+
+## Installation Process
+
+Node Providers follow these steps to install SetupOS:
+
+<Steps>
+  <Step title="Obtain SetupOS Image">
+    Download the SetupOS image and write it to a bootable USB drive.
+  </Step>
+  <Step title="Add Configuration">
+    Add the necessary node configurations to the image (Node Operator keys, network settings, etc.).
+  </Step>
+  <Step title="Boot from USB">
+    Plug the USB drive into the node machine and boot from the USB.
+  </Step>
+  <Step title="Automated Installation">
+    SetupOS performs validation, prepares hardware, and installs HostOS and GuestOS automatically.
+  </Step>
+  <Step title="Reboot">
+    Once completed, the machine reboots into HostOS and the node is ready to join the network.
+  </Step>
+</Steps>
+
+<Note>
+For comprehensive information on the onboarding process, hardware requirements, and networking requirements, visit the [Node Provider Onboarding Wiki](https://wiki.internetcomputer.org/wiki/Node_Provider_Onboarding).
+</Note>
+
+## Installation Script Sequence
+
+The SetupOS installation is initiated by the systemd service unit file `setupos.service`. This service is of type `idle`, which means the installation is triggered only after every other unit has either completed or started.
+
+The installation process consists of multiple Shell and Python scripts located in `/opt/ic/bin`. The sequence is defined in the main installation script `setupos.sh`:
+
+<Steps>
+  <Step title="check-hardware.sh">
+    Verifies the system's hardware components meet the requirements for running IC nodes.
+  </Step>
+  <Step title="check-network.sh">
+    Tests network connectivity and reachability of the Network Nervous System (NNS).
+  </Step>
+  <Step title="setup-disk.sh">
+    Purges existing LVM configurations and prepares disk partitions.
+  </Step>
+  <Step title="install-hostos.sh">
+    Installs and configures the HostOS operating system.
+  </Step>
+  <Step title="install-guestos.sh">
+    Installs and configures the GuestOS operating system.
+  </Step>
+  <Step title="setup-hostos-config.sh">
+    Sets up the HostOS configuration partition with node-specific settings.
+  </Step>
+</Steps>
+
+## Build Variants
+
+SetupOS has two build variants:
+
+<Tabs>
+  <Tab title="Production">
+    **Target**: `prod`
+    
+    - Console access is disabled
+    - Used for production node deployments
+    - Enhanced security posture
+    - Smaller image size (~2.3 GB)
+    
+    ```bash
+    bazel build //ic-os/setupos/envs/prod/...
+    ```
+  </Tab>
+  <Tab title="Development">
+    **Target**: `dev`
+    
+    - Console access is enabled
+    - Username and password: `root`
+    - Used for testing and development
+    - Includes debugging tools
+    
+    ```bash
+    bazel build //ic-os/setupos/envs/dev/...
+    ```
+  </Tab>
+</Tabs>
+
+## Building SetupOS
+
+SetupOS images are built using Bazel:
+
+```bash
+# Build production SetupOS
+bazel build //ic-os/setupos/envs/prod/...
+
+# Build development SetupOS
+bazel build //ic-os/setupos/envs/dev/...
+
+# Output location
+# bazel-bin/ic-os/setupos/envs/<TARGET>/disk-img.tar.zst
+```
+
+<Note>
+SetupOS builds do not generate upgrade images (`upgrades = False` in BUILD.bazel) since SetupOS is only used for initial installation.
+</Note>
+
+## Node Provider Roles
+
+Understanding the different roles in node management:
+
+### Node Provider
+
+An entity that purchases and owns the node hardware. Node Providers are rewarded for their node's useful work on the Internet Computer network.
+
+### Node Technician
+
+Node Technicians are responsible for the physical installation, maintenance, and repair of the node. These are typically "hired hands" or "remote hands" employed by the Node Providers.
+
+- A single node may have more than one Node Technician
+- The Node Technician can be thought of as the individual currently operating the node
+- This role can cycle among several parties
+- Information about Node Technicians is not stored in the NNS
+
+<Note>
+It is possible that a Node Provider and Node Technician are the same entity.
+</Note>
+
+### Node Operator
+
+The term "Node Operator" refers not to a specific individual or group, but to:
+
+- A specific record within the NNS registry - the **Node Operator record**
+- A key in the Node Operator record - the **Node Operator key**
+
+<Steps>
+  <Step title="Creation of Node Operator Key">
+    A Node Provider generates a private/public key pair.
+  </Step>
+  <Step title="Creation of Node Operator Record">
+    The Node Provider creates a Node Operator record in the NNS, which contains their Node Operator public key.
+  </Step>
+  <Step title="Key Sharing">
+    The Node Provider shares the Node Operator private key with their Node Technician, enabling the technician to onboard nodes on behalf of the Node Provider.
+  </Step>
+  <Step title="NNS Onboarding Approval">
+    Prior to approving node onboarding, the NNS verifies the Node Operator record to confirm that the Node Provider is authorized to onboard nodes and has not exceeded their node allotment.
+  </Step>
+</Steps>
+
+<Warning>
+"Node Operator" has been overloaded and is often erroneously used to refer to Node Technicians. For clarity, this incorrect usage should be avoided.
+</Warning>
+
+## Image Structure
+
+SetupOS follows the standard IC-OS build pipeline:
+
+1. **Base Image**: Ubuntu packages installed via `Dockerfile.base`
+2. **Main Image**: System configuration via `Dockerfile`
+3. **Bootable Image**: Transformed into a USB-bootable image
+4. **Partitions**: Single-use image with EFI, GRUB, boot, and root partitions
+
+Packages are defined in:
+- `ic-os/setupos/context/packages.common` - Common packages
+- `ic-os/setupos/context/packages.dev` - Development-only packages
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building Images" icon="hammer" href="/ic-os/building-images">
+    Learn how to build SetupOS images locally
+  </Card>
+  <Card title="HostOS" icon="server" href="/ic-os/hostos">
+    Understand what SetupOS installs on the host
+  </Card>
+  <Card title="Node Provider Onboarding" icon="link" href="https://wiki.internetcomputer.org/wiki/Node_Provider_Onboarding">
+    Complete guide to onboarding nodes
+  </Card>
+  <Card title="Overview" icon="book" href="/ic-os/overview">
+    Back to IC-OS overview
+  </Card>
+</CardGroup>

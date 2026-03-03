@@ -1,0 +1,421 @@
+---
+title: Node Setup
+description: Complete guide to setting up an Internet Computer node from hardware installation to initial configuration
+---
+
+## Overview
+
+Setting up an Internet Computer node involves installing and configuring the IC-OS operating system stack, which consists of three specialized OS layers:
+
+- **SetupOS**: Handles initial hardware setup and installation
+- **HostOS**: Manages the host machine and VM infrastructure
+- **GuestOS**: Runs the Internet Computer replica protocol
+
+This guide covers the complete node setup process from hardware preparation to successful node registration.
+
+## Prerequisites
+
+### Hardware Requirements
+
+<Info>
+All drives must be correctly installed before starting the setup process. The SetupOS will halt if required drives are not detected.
+</Info>
+
+**Minimum System Requirements:**
+- x86-64 based system
+- 16 GB RAM/SWAP minimum
+- 100 GB available disk space
+- Multiple storage drives for production deployments
+
+**Supported Platforms:**
+- Ubuntu 22.04 or newer (for building)
+- Bare metal servers (for production nodes)
+- Virtual machines (for development/testing)
+
+### Network Requirements
+
+- Stable internet connection
+- NTP server access for time synchronization
+- Access to NNS (Network Nervous System) nodes
+- IPv4/IPv6 network connectivity
+
+## Setup Process
+
+### Step 1: Prepare SetupOS
+
+SetupOS is responsible for bootstrapping a new replica node and installing both HostOS and GuestOS.
+
+<Steps>
+  <Step title="Download SetupOS Image">
+    Obtain the latest SetupOS image from the official IC releases:
+    ```bash
+    # Verify releases at
+    https://dashboard.internetcomputer.org/releases
+    ```
+  </Step>
+
+  <Step title="Create Bootable Media">
+    Write the SetupOS image to a USB drive or configure PXE boot:
+    ```bash
+    # Example using dd (replace /dev/sdX with your USB device)
+    sudo dd if=setupos.img of=/dev/sdX bs=4M status=progress
+    sudo sync
+    ```
+  </Step>
+
+  <Step title="Configure Hardware">
+    - Install all required storage drives
+    - Connect network cables
+    - Attach Nitrokey HSM (if using hardware signing)
+    - Ensure BIOS/UEFI is configured for network boot if applicable
+  </Step>
+</Steps>
+
+### Step 2: Run SetupOS Installation
+
+SetupOS performs automated validation and installation when booted.
+
+<Steps>
+  <Step title="Boot SetupOS">
+    Boot from the SetupOS media. You'll see:
+    ```
+    -------------------------------------------------------------------------------
+                           INTERNET COMPUTER - SETUP
+    -------------------------------------------------------------------------------
+    ```
+  </Step>
+
+  <Step title="Automated Validation">
+    SetupOS runs the following checks automatically:
+    
+    **Age Check** (`check-setupos-age.sh`)
+    - Verifies SetupOS version is not too old
+    
+    **Configuration Check** (`check-config.sh`)
+    - Validates node configuration file
+    
+    **Hardware Check** (`check-hardware.sh`)
+    - Verifies all required hardware is present
+    
+    **Network Check** (`check-network.sh`)
+    - Tests network connectivity
+    
+    **GuestOS Check** (`check-guestos-blessed.sh`)
+    - Confirms GuestOS image is blessed/approved
+    
+    **NTP Check** (`check-ntp.sh`)
+    - Validates time synchronization
+  </Step>
+
+  <Step title="Disk Setup">
+    SetupOS prepares storage:
+    
+    ```bash
+    # Storage setup process (from setup-disk.sh)
+    # 1. Purges existing partitions (for redeployments)
+    # 2. Removes LVM metadata
+    # 3. Wipes partition tables
+    # 4. Creates physical volumes on each drive
+    ```
+    
+    <Warning>
+    All data on the drives will be permanently erased during setup. Ensure you have backups of any important data.
+    </Warning>
+  </Step>
+
+  <Step title="Install HostOS">
+    SetupOS installs the HostOS layer:
+    ```bash
+    # Executed automatically by install-hostos.sh
+    # - Creates LVM partitions for HostOS
+    # - Installs HostOS boot and root images
+    # - Configures bootloader
+    ```
+  </Step>
+
+  <Step title="Install GuestOS">
+    SetupOS installs the GuestOS layer:
+    ```bash
+    # Executed automatically by install-guestos.sh
+    # - Creates LVM partition for GuestOS
+    # - Installs GuestOS image
+    # - Sets up virtual machine configuration
+    ```
+  </Step>
+
+  <Step title="Configure HostOS">
+    Final HostOS configuration is applied:
+    ```bash
+    # Executed by setup-hostos-config.sh
+    # - Network configuration
+    # - SSH keys
+    # - Registry settings
+    ```
+  </Step>
+</Steps>
+
+<Info>
+If a Nitrokey HSM USB device is in use during setup, do NOT unplug it until the reboot is complete.
+</Info>
+
+### Step 3: First Boot and Node Registration
+
+After SetupOS completes, the system reboots into HostOS, which launches the GuestOS VM.
+
+<Steps>
+  <Step title="System Initialization">
+    The Orchestrator service starts automatically and performs:
+    
+    - **Node key generation** (from `rs/orchestrator/src/orchestrator.rs:121-128`)
+    ```rust
+    // Keys are generated once and stored securely
+    generate_node_keys_once(&crypto_config, ...)
+        .map(|keys| keys.node_id())
+    ```
+    
+    - **Version detection**
+    ```rust
+    // Loads replica version from file
+    let replica_version = load_version_from_file(&logger, &args.version_file)
+    ```
+  </Step>
+
+  <Step title="Wait for Registry Sync">
+    The node connects to NNS and begins replicating the registry:
+    
+    ```
+    Orchestrator started: version=<version>, config=<config>
+    node-id <node_id>: starting with version <version>
+    ```
+    
+    <Info>
+    Initial registry synchronization may take several minutes. Wait for the "Join request successful!" message.
+    </Info>
+  </Step>
+
+  <Step title="Node Registration">
+    The node attempts automatic registration with the NNS.
+    
+    **Two registration methods are supported:**
+    
+    1. **Node Operator Private Key** (from `rs/orchestrator/src/registration.rs:93-100`)
+    ```rust
+    // If node_operator_pem is provided in config
+    match node_config.clone().registration.node_operator_pem {
+        Some(path) => match NodeProviderSigner::new(path.as_path()) {
+            Some(signer) => /* Use PEM signing */
+            None => /* Fallback to HSM */
+        }
+    }
+    ```
+    
+    2. **Hardware Security Module (HSM)**
+    - Fallback method when PEM not available
+    - Requires physical Nitrokey device
+    - May display QR code for verification
+  </Step>
+
+  <Step title="Verify Registration">
+    Monitor logs for successful registration:
+    ```bash
+    # On the node (if SSH access is available)
+    journalctl -u ic-replica -f
+    
+    # Look for:
+    # "Join request successful!"
+    # "Node registered with NNS"
+    ```
+  </Step>
+</Steps>
+
+## Configuration Files
+
+### Node Configuration
+
+The primary node configuration is provided during SetupOS:
+
+```json
+{
+  "config_version": "1.0",
+  "icos_settings": {
+    "enable_trusted_execution_environment": false
+  },
+  "registration": {
+    "node_operator_pem": "/path/to/operator.pem",
+    "nns_url": "https://ic0.app"
+  },
+  "transport": {
+    "node_ip": "192.168.1.100"
+  },
+  "ipv4_config": {
+    "address": "192.168.1.100",
+    "gateway": "192.168.1.1",
+    "prefix_length": 24
+  }
+}
+```
+
+### IC Replica Configuration
+
+The replica configuration is automatically generated but can be customized:
+
+```json
+{
+  "registry_client": {
+    "local_store": "/var/lib/ic/data/ic_registry_local_store"
+  },
+  "state_manager": {
+    "state_root": "/var/lib/ic/data"
+  },
+  "crypto": {
+    "crypto_root": "/var/lib/ic/crypto"
+  },
+  "metrics": {
+    "exporter": {
+      "http": "0.0.0.0:9090"
+    }
+  }
+}
+```
+
+## Storage Layout
+
+### System Drive Partitioning
+
+```
+/dev/sda (System Drive)
+├── /boot         - Boot partition
+├── /             - Root filesystem (HostOS)
+└── LVM hostlvm
+    ├── guestos   - GuestOS virtual disk
+    ├── data      - Persistent data
+    ├── backup    - Backup storage
+    └── swap      - Swap partition
+```
+
+### Data Directories
+
+**HostOS:**
+- `/var/lib/libvirt/` - VM configurations
+- `/var/log/` - System logs
+
+**GuestOS (within VM):**
+- `/var/lib/ic/data/` - IC state and registry
+- `/var/lib/ic/crypto/` - Cryptographic keys
+- `/var/lib/ic/backup/` - Backup data
+- `/opt/ic/bin/` - IC binaries and scripts
+- `/opt/ic/share/` - Shared resources
+
+## Verification
+
+### Check Node Status
+
+<Steps>
+  <Step title="Verify Orchestrator Service">
+    ```bash
+    # On HostOS (if SSH access enabled)
+    systemctl status ic-orchestrator
+    
+    # Should show: active (running)
+    ```
+  </Step>
+
+  <Step title="Verify GuestOS VM">
+    ```bash
+    # Check VM is running
+    virsh list
+    
+    # Should show guestos domain running
+    ```
+  </Step>
+
+  <Step title="Check Replica Status">
+    ```bash
+    # From HostOS, check GuestOS logs
+    virsh console guestos
+    
+    # Or via monitoring
+    curl http://localhost:9090/metrics | grep ic_replica
+    ```
+  </Step>
+
+  <Step title="Verify Network Connectivity">
+    ```bash
+    # Test NNS connectivity
+    ping -c 3 ic0.app
+    
+    # Check registry replication
+    journalctl -u ic-registry-replicator
+    ```
+  </Step>
+</Steps>
+
+### Health Checks
+
+The node performs continuous health monitoring:
+
+```bash
+# GuestOS version check
+# Location: /opt/ic/share/version.txt
+
+# Boot metrics
+# Tracked in: guestos_boot_action metric
+
+# Config version
+# Tracked in: guestos_config_version metric
+
+# TEE status (if applicable)
+# Tracked in: guestos_tee_configured, guestos_tee_active metrics
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Setup Fails with "Drive not found"**
+- Verify all drives are properly connected
+- Check BIOS/UEFI recognizes all drives
+- Ensure drives are not already in use
+
+**Network Check Fails**
+- Verify network cable connections
+- Check DHCP server is accessible
+- Confirm firewall rules allow outbound connections
+
+**Node Registration Fails**
+- Verify NNS URL is correct
+- Check node operator PEM file permissions
+- Ensure Nitrokey HSM is properly connected (if using)
+- Allow up to 10 minutes for initial registration
+
+**GuestOS Won't Start**
+- Check HostOS has sufficient resources
+- Verify libvirt service is running: `systemctl status libvirtd`
+- Check VM logs: `virsh console guestos`
+
+### Development Images
+
+<Note>
+For development and testing, use `dev` images which provide console access with username/password: `root`/`root`
+</Note>
+
+```bash
+# Build dev images
+bazel build //ic-os/setupos/envs/dev/...
+bazel build //ic-os/hostos/envs/dev/...
+bazel build //ic-os/guestos/envs/dev/...
+```
+
+## Next Steps
+
+After successful node setup:
+
+1. [Configure monitoring](/operations/monitoring) - Set up metrics and alerting
+2. [Review upgrade procedures](/operations/upgrades) - Understand how to upgrade your node
+3. [Node provider operations](/operations/node-provider-guide) - Learn about ongoing node operations
+
+## Related Resources
+
+- [Internet Computer Wiki - For Node Providers](https://wiki.internetcomputer.org/wiki/Internet_Computer_wiki#For_Node_Providers)
+- [IC Dashboard](https://dashboard.internetcomputer.org)
+- [Release Verification](/operations/upgrades#verifying-releases)

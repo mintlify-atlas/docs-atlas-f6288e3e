@@ -1,0 +1,155 @@
+---
+title: Security Model
+description: Overview of the Internet Computer Protocol's security architecture and trust model
+---
+
+The Internet Computer Protocol (ICP) implements a comprehensive security model designed to ensure the integrity, authenticity, and availability of decentralized applications running on the network.
+
+## Overview
+
+The Internet Computer's security model is built on several key principles:
+
+- **Decentralized trust**: No single entity controls the network
+- **Cryptographic verification**: All operations are cryptographically signed and verified
+- **Replica consensus**: Multiple nodes must agree on state changes
+- **Secure key management**: Advanced cryptographic protocols protect sensitive keys
+
+## Core Security Components
+
+### Crypto Component
+
+The Crypto Component (`ic-crypto`) is the foundation of ICP's security model. It provides:
+
+- **Distributed Key Generation (DKG)**: Secure generation of shared keys across multiple nodes
+- **Threshold Signatures**: Signatures that require cooperation of multiple parties
+- **Digital Signatures**: Multiple signature schemes for different use cases
+- **TLS Handshakes**: Secure communication between nodes
+- **Random Number Generation**: Cryptographically secure randomness
+
+For implementation details, see the Rust documentation in `rs/crypto/src/lib.rs`.
+
+### Secret Key Management
+
+The Crypto Component includes a **SecretKeyStore** that:
+
+- Manages and protects secret keys owned by each node
+- Supports remote vault operations via RPC for enhanced security
+- Implements secure key storage and access control
+- Prevents unauthorized access to cryptographic material
+
+### Node Authentication
+
+Each node in the Internet Computer network is authenticated through:
+
+- **Node Public Keys**: Each node has cryptographically verifiable public keys
+- **Node ID Derivation**: Node IDs are derived from node signing public keys
+- **Registry Verification**: Node keys are validated against the registry
+- **TLS Certificates**: Mutual TLS authentication between nodes
+
+## Trust Model
+
+### Subnet-Based Security
+
+The Internet Computer organizes nodes into **subnets**, where:
+
+- Each subnet runs independent consensus
+- Threshold cryptography requires cooperation of multiple nodes
+- Byzantine fault tolerance ensures security even with malicious nodes
+- Subnets are geographically and organizationally distributed
+
+### Chain Key Cryptography
+
+ICP uses novel **chain key cryptography** that enables:
+
+- Single public key for the entire subnet
+- Non-interactive distributed key generation (NI-DKG)
+- Efficient signature verification
+- Secure threshold signing without interactive rounds
+
+For more details, see the [DFINITY blog post on NI-DKG](https://medium.com/dfinity/applied-crypto-one-public-key-for-the-internet-computer-ni-dkg-4af800db869d).
+
+### Network Nervous System (NNS)
+
+The **NNS** is the decentralized governance system that:
+
+- Controls network upgrades through proposal voting
+- Manages subnet configurations
+- Validates node provider participation
+- Ensures democratic control of the protocol
+
+Learn more about the [NNS governance model](https://medium.com/dfinity/understanding-the-internet-computers-network-nervous-system-neurons-and-icp-utility-tokens-730dab65cae8).
+
+## Threat Model
+
+### Protected Against
+
+The Internet Computer's security model protects against:
+
+- **Malicious Nodes**: Byzantine fault tolerance handles compromised nodes
+- **Network Attacks**: TLS and cryptographic verification prevent tampering
+- **Replay Attacks**: Cryptographic protocols include replay protection
+- **Man-in-the-Middle**: Mutual TLS authentication prevents interception
+- **Sybil Attacks**: Node provider registration and staking requirements
+
+### Assumptions
+
+The security model assumes:
+
+- A majority of nodes in each subnet are honest
+- Cryptographic primitives (SHA-256, BLS12-381, Ed25519, etc.) are secure
+- Node providers follow security best practices
+- The underlying hardware is not compromised
+
+## Security Verification
+
+### Build Reproducibility
+
+The Internet Computer ensures software integrity through:
+
+- **Reproducible Builds**: Anyone can verify that binaries match source code
+- **Release Verification**: Each release includes verification instructions
+- **Public Source Code**: All code is open source and auditable
+
+See the [verifying releases documentation](https://github.com/dfinity/ic#verifying-releases) for details.
+
+### Auditing and Monitoring
+
+- All state changes are logged and verifiable
+- Cryptographic operations include metrics and monitoring
+- Node behavior is continuously monitored by the network
+- The dashboard at [dashboard.internetcomputer.org](https://dashboard.internetcomputer.org) provides transparency
+
+## Licensing and Compliance
+
+The Internet Computer codebase uses multiple licenses to balance openness with intellectual property protection:
+
+- **Apache 2.0**: Most components are licensed under Apache 2.0
+- **IC Community Source License 1.0**: Some components use more restrictive licensing
+- **IC Shared Community Source License 1.0**: Additional licensing for shared components
+
+See the `LICENSE` file in the repository for complete licensing information.
+
+## Security Resources
+
+- [Security Policy](/reference/vulnerability-reporting): How to report vulnerabilities
+- [Cryptographic Protocols](/reference/cryptographic-protocols): Detailed cryptographic documentation
+- [Technical Overview](https://medium.com/dfinity/a-technical-overview-of-the-internet-computer-f57c62abc20f): High-level architecture
+- [Interface Specification](https://sdk.dfinity.org/docs/interface-spec/index.html): Low-level protocol specification
+- [Consensus Protocol](https://medium.com/dfinity/achieving-consensus-on-the-internet-computer-ee9fbfbafcbc): Consensus algorithm details
+
+## Best Practices for Developers
+
+When building on the Internet Computer:
+
+1. **Verify Certificates**: Always verify chain certificates when making inter-canister calls
+2. **Use Official SDKs**: Use the official Canister SDK for development
+3. **Follow Security Guidelines**: Review security best practices in the documentation
+4. **Audit Smart Contracts**: Have canister code audited before deployment
+5. **Monitor Behavior**: Use the ICP dashboard to monitor canister behavior
+6. **Report Issues**: Report any security concerns through proper channels
+
+## Related Documentation
+
+- [Vulnerability Reporting](/reference/vulnerability-reporting)
+- [Cryptographic Protocols](/reference/cryptographic-protocols)
+- [Canisters: Evolution of Smart Contracts](https://medium.com/dfinity/software-canisters-an-evolution-of-smart-contracts-internet-computer-f1f92f1bfffb)

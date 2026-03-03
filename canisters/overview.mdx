@@ -1,0 +1,200 @@
+---
+title: "Canisters Overview"
+description: "Understanding canisters - the fundamental smart contract units on the Internet Computer"
+---
+
+# Canisters Overview
+
+Canisters are the fundamental building blocks of applications on the Internet Computer. A canister is a smart contract that bundles together WebAssembly code and persistent state, running on the IC's replicated subnet infrastructure.
+
+## What is a Canister?
+
+A canister is a computational unit that contains:
+
+- **WebAssembly bytecode** - The executable code of your application
+- **Persistent state** - Data that survives across calls and upgrades
+- **Cycles balance** - The fuel for computation and storage
+- **Message queues** - Input and output message queues for inter-canister communication
+
+<Note>
+Unlike traditional smart contracts, canisters can handle HTTP requests, schedule periodic tasks, and maintain large amounts of state.
+</Note>
+
+## Key Concepts
+
+### Execution State
+
+The execution state of a canister includes:
+
+- **Wasm memory** - The linear memory accessible to WebAssembly code
+- **Stable memory** - Orthogonal persistent storage that survives upgrades
+- **Global variables** - WebAssembly global state
+- **Wasm binary** - The compiled WebAssembly module
+
+### System State
+
+The system state manages:
+
+- **Controllers** - Principals authorized to manage the canister (max 10)
+- **Cycles balance** - The canister's account for paying for resources
+- **Message queues** - Input and output queues for requests and responses
+- **Canister settings** - Configuration like memory allocation and compute allocation
+- **Canister history** - Record of all changes made to the canister
+
+From `rs/replicated_state/src/canister_state.rs`:
+
+```rust
+pub struct CanisterState {
+    pub system_state: SystemState,
+    pub execution_state: Option<ExecutionState>,
+    pub scheduler_state: SchedulerState,
+}
+```
+
+## Canister Status
+
+A canister can be in one of three states:
+
+### Running
+
+The canister is active and can:
+- Accept and process messages
+- Execute scheduled tasks (heartbeats, timers)
+- Make inter-canister calls
+
+### Stopping
+
+Transitional state where:
+- New messages are rejected
+- Existing messages continue processing
+- Transitions to `Stopped` when all messages complete
+
+### Stopped
+
+The canister is inactive:
+- All message processing is halted
+- No code execution occurs
+- Can be restarted by controllers
+
+## Resource Management
+
+### Memory
+
+Canisters consume several types of memory:
+
+- **Execution memory** - Wasm heap + stable memory + globals + binary
+- **Message memory** - Memory used by queued messages
+- **Canister history** - Memory for tracking canister changes
+- **Wasm chunk store** - Temporary storage for chunked uploads
+- **Snapshots** - Memory used by canister snapshots
+
+From `rs/replicated_state/src/canister_state.rs:333-339`:
+
+```rust
+pub fn memory_usage(&self) -> NumBytes {
+    self.execution_memory_usage()
+        + self.canister_history_memory_usage()
+        + self.wasm_chunk_store_memory_usage()
+        + self.log_memory_store_memory_usage()
+        + self.snapshots_memory_usage()
+}
+```
+
+### Cycles
+
+Cycles are the fuel for computation on the IC:
+
+- **Computation costs** - Charged per instruction executed
+- **Storage costs** - Charged for memory usage over time
+- **Message costs** - Charged for sending and receiving messages
+- **Special operation costs** - HTTP outcalls, threshold signatures, etc.
+
+## Management Canister
+
+The management canister (`ic:00` or `aaaaa-aa`) provides APIs for:
+
+- Creating and deleting canisters
+- Installing and upgrading code
+- Starting and stopping canisters
+- Managing canister settings
+- Querying canister status
+- Taking and loading snapshots
+
+From `rs/types/management_canister_types/src/lib.rs:74-145`:
+
+```rust
+pub enum Method {
+    CanisterStatus,
+    CanisterInfo,
+    CreateCanister,
+    DeleteCanister,
+    InstallCode,
+    StartCanister,
+    StopCanister,
+    UninstallCode,
+    UpdateSettings,
+    // ... and many more
+}
+```
+
+## Canister Settings
+
+Configurable settings include:
+
+### Controllers
+
+Principals authorized to manage the canister:
+- Maximum of 10 controllers
+- Can update settings, install code, delete the canister
+
+### Compute Allocation
+
+Guaranteed fraction of subnet compute capacity:
+- Range: 0-100 (percentage)
+- 0 means best-effort scheduling
+
+### Memory Allocation
+
+Guaranteed memory reservation:
+- Specified in bytes
+- None means best-effort
+
+### Freezing Threshold
+
+Minimum cycles balance before the canister freezes:
+- Specified in seconds of operation
+- Defaults to approximately 30 days
+
+### Log Visibility
+
+Controls who can view canister logs:
+- `controllers` - Only controllers can view
+- `public` - Anyone can view
+- `allowed_viewers` - Specific principals can view (max 10)
+
+## Message Processing
+
+Canisters process messages through:
+
+1. **Update calls** - Modify canister state, take ~2 seconds
+2. **Query calls** - Read-only, complete in ~200ms
+3. **Inter-canister calls** - Async calls between canisters
+4. **System hooks** - Heartbeat, global timer, low memory callbacks
+
+<Tip>
+Queries execute on a single node and don't go through consensus, making them much faster than updates.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Canister Lifecycle" icon="rotate" href="/canisters/canister-lifecycle">
+    Learn about creating, upgrading, and managing canisters
+  </Card>
+  <Card title="System API" icon="code" href="/canisters/system-api">
+    Explore the System API available to canisters
+  </Card>
+  <Card title="Inter-Canister Calls" icon="arrows-left-right" href="/canisters/inter-canister-calls">
+    Understand how canisters communicate
+  </Card>
+</CardGroup>

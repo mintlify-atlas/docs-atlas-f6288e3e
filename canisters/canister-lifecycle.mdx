@@ -1,0 +1,370 @@
+---
+title: "Canister Lifecycle"
+description: "Creating, installing, upgrading, and managing canisters on the Internet Computer"
+---
+
+# Canister Lifecycle
+
+This guide covers the complete lifecycle of a canister, from creation to deletion, including installation, upgrades, and state management.
+
+## Creating a Canister
+
+Canisters are created through the management canister's `create_canister` method.
+
+### Creation Process
+
+1. **Send cycles** - Attach cycles to fund the new canister
+2. **Specify settings** - Optionally configure controllers, memory, compute
+3. **Receive canister ID** - Get back a unique principal for the new canister
+
+From `rs/execution_environment/src/execution_environment.rs:766-814`:
+
+```rust
+Ok(Ic00Method::CreateCanister) => {
+    match CreateCanisterArgs::decode(payload) {
+        Ok(args) => {
+            let cycles = msg.take_cycles();
+            let settings = args.settings.unwrap_or_default();
+            self.create_canister(
+                msg.canister_change_origin(sender_canister_version),
+                cycles,
+                settings,
+                registry_settings,
+                &mut state,
+                round_limits,
+            )
+        }
+    }
+}
+```
+
+### Initial Settings
+
+When creating a canister, you can specify:
+
+- **Controllers** - Up to 10 principals with management rights
+- **Compute allocation** - Guaranteed compute percentage (0-100)
+- **Memory allocation** - Reserved memory in bytes
+- **Freezing threshold** - Cycles threshold before freezing
+
+<Note>
+If no controllers are specified, the caller becomes the sole controller.
+</Note>
+
+## Installing Code
+
+After creation, canisters start empty. You must install WebAssembly code to make them functional.
+
+### Install Modes
+
+From `rs/types/management_canister_types/src/lib.rs:1631-1673`:
+
+```rust
+pub enum CanisterInstallModeV2 {
+    #[serde(rename = "install")]
+    Install,
+    #[serde(rename = "reinstall")]
+    Reinstall,
+    #[serde(rename = "upgrade")]
+    Upgrade(Option<CanisterUpgradeOptions>),
+}
+```
+
+#### Install
+
+- Used for empty canisters (no existing code)
+- Initializes the canister state from scratch
+- Calls `canister_init` if exported
+
+#### Reinstall
+
+- Replaces existing code and **clears all state**
+- Use with caution - all data is lost
+- Useful for testing or complete resets
+
+#### Upgrade
+
+- Replaces code while **preserving stable memory**
+- Calls `canister_pre_upgrade` before upgrade
+- Calls `canister_post_upgrade` after upgrade
+- Most common mode for production updates
+
+### Install Process
+
+1. **Validate Wasm** - Ensure the module is valid WebAssembly
+2. **Check permissions** - Verify caller is a controller
+3. **Compile module** - Convert Wasm to executable form
+4. **Run init/upgrade hooks** - Execute setup code
+5. **Update state** - Replace old code with new
+
+### Upgrade Options
+
+From `rs/types/management_canister_types/src/lib.rs:1711-1733`:
+
+```rust
+pub struct CanisterUpgradeOptions {
+    pub skip_pre_upgrade: Option<bool>,
+    pub wasm_memory_persistence: Option<WasmMemoryPersistence>,
+}
+
+pub enum WasmMemoryPersistence {
+    #[serde(rename = "keep")]
+    Keep,
+    #[serde(rename = "replace")]
+    Replace,
+}
+```
+
+- **skip_pre_upgrade** - Skip the pre_upgrade hook (use carefully)
+- **wasm_memory_persistence** - Choose to keep or replace Wasm memory during upgrade
+
+<Warning>
+Skipping `pre_upgrade` means you cannot save data to stable memory. Use only when you're certain the upgrade doesn't need to preserve state.
+</Warning>
+
+## Chunked Code Upload
+
+For large Wasm modules, use chunked upload:
+
+1. **upload_chunk** - Upload chunks of the Wasm module
+2. **stored_chunks** - Query which chunks are stored
+3. **install_chunked_code** - Install from uploaded chunks
+4. **clear_chunk_store** - Clean up after installation
+
+This avoids message size limits for large canisters.
+
+## Managing Canisters
+
+### Starting and Stopping
+
+#### stop_canister
+
+Gracefully stops a canister:
+- Rejects new messages
+- Allows in-flight messages to complete
+- Enters `Stopping` then `Stopped` state
+
+From `rs/execution_environment/src/execution_environment.rs:995-1005`:
+
+```rust
+Ok(Ic00Method::StopCanister) => match CanisterIdRecord::decode(payload) {
+    Ok(args) => {
+        self.stop_canister(
+            args.get_canister_id(),
+            &msg,
+            &mut state,
+            &subnet_admins
+        )
+    }
+}
+```
+
+#### start_canister
+
+Restarts a stopped canister:
+- Transitions to `Running` state
+- Resumes processing messages
+- Scheduled tasks resume
+
+### Updating Settings
+
+Modify canister configuration after creation:
+
+```rust
+Ok(Ic00Method::UpdateSettings) => {
+    match UpdateSettingsArgs::decode(payload) {
+        Ok(args) => {
+            self.update_settings(
+                timestamp_nanos,
+                msg.canister_change_origin(sender_canister_version),
+                settings,
+                canister_id,
+                &mut state,
+            )
+        }
+    }
+}
+```
+
+You can update:
+- Controllers list
+- Compute and memory allocations
+- Freezing threshold
+- Log visibility
+- Wasm memory limit and threshold
+
+### Querying Status
+
+The `canister_status` method returns:
+
+```rust
+pub struct CanisterStatusResultV2 {
+    status: CanisterStatusType,        // Running/Stopping/Stopped
+    module_hash: Option<Vec<u8>>,      // Hash of installed code
+    memory_size: candid::Nat,          // Total memory usage
+    cycles: candid::Nat,               // Cycles balance
+    settings: DefiniteCanisterSettings,
+    idle_cycles_burned_per_day: candid::Nat,
+    reserved_cycles: candid::Nat,
+    // ... memory metrics, query stats
+}
+```
+
+## Canister History
+
+Every change to a canister is recorded in its history:
+
+From `rs/types/management_canister_types/src/lib.rs:634-654`:
+
+```rust
+pub struct CanisterChange {
+    timestamp_nanos: u64,
+    canister_version: u64,
+    origin: CanisterChangeOrigin,
+    details: CanisterChangeDetails,
+}
+```
+
+### Change Types
+
+- **Creation** - Initial canister creation with controllers
+- **Code deployment** - Install/reinstall/upgrade with module hash
+- **Code uninstall** - Removal of Wasm code
+- **Controllers change** - Updated controller list
+- **Settings change** - Modified canister settings
+- **Load snapshot** - Snapshot restoration
+- **Rename canister** - Canister migration
+
+### Querying History
+
+Use `canister_info` to retrieve recent changes:
+
+```rust
+pub struct CanisterInfoRequest {
+    canister_id: PrincipalId,
+    num_requested_changes: Option<u64>,
+}
+```
+
+## Canister Snapshots
+
+Snapshots provide point-in-time backups of canister state.
+
+### Taking Snapshots
+
+```rust
+Ok(Ic00Method::TakeCanisterSnapshot) => {
+    // Creates a snapshot of current state
+    // Returns snapshot ID
+}
+```
+
+A snapshot includes:
+- Wasm memory
+- Stable memory
+- Wasm binary
+- Certified data
+- Wasm chunk store
+
+### Loading Snapshots
+
+```rust
+Ok(Ic00Method::LoadCanisterSnapshot) => {
+    // Restores canister to snapshot state
+    // Preserves cycles balance
+}
+```
+
+### Managing Snapshots
+
+- **list_canister_snapshots** - View all snapshots
+- **delete_canister_snapshot** - Remove a snapshot
+- **read_canister_snapshot_metadata** - Get snapshot info
+- **read_canister_snapshot_data** - Export snapshot data
+
+<Tip>
+Snapshots are useful for:
+- Backup before risky upgrades
+- Testing upgrade paths
+- Disaster recovery
+- Migrating canisters between subnets
+</Tip>
+
+## Uninstalling Code
+
+Remove Wasm code while keeping the canister:
+
+```rust
+Ok(Ic00Method::UninstallCode) => {
+    self.canister_manager.uninstall_code(
+        canister_change_origin,
+        args.get_canister_id(),
+        &mut state,
+    )
+}
+```
+
+After uninstalling:
+- The canister exists but has no code
+- All execution state is cleared
+- System state (cycles, controllers) remains
+- The canister can accept deposits but not execute code
+
+## Deleting Canisters
+
+Permanently remove a canister:
+
+```rust
+Ok(Ic00Method::DeleteCanister) => {
+    self.canister_manager.delete_canister(
+        *msg.sender(),
+        args.get_canister_id(),
+        &mut state,
+    )
+}
+```
+
+Requirements:
+- Canister must be stopped
+- Caller must be a controller
+- All state is permanently deleted
+- Remaining cycles are returned to the caller
+
+<Warning>
+Deletion is irreversible. All data, including cycles, is lost if not properly withdrawn first.
+</Warning>
+
+## Best Practices
+
+### Upgrade Safety
+
+1. **Test upgrades thoroughly** on testnets
+2. **Use stable memory** for data that must persist
+3. **Take snapshots** before production upgrades
+4. **Implement rollback** via snapshot restoration
+5. **Monitor cycles** to avoid unexpected freezing
+
+### State Management
+
+1. **Migrate data** in pre_upgrade hook
+2. **Validate state** in post_upgrade hook
+3. **Version your data** for future compatibility
+4. **Keep stable memory organized** with clear schemas
+
+### Controller Management
+
+1. **Use multiple controllers** for redundancy
+2. **Include NNS governance** for critical canisters
+3. **Document controller roles** and responsibilities
+4. **Audit controller changes** regularly
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="System API" icon="code" href="/canisters/system-api">
+    Explore the System API for canister development
+  </Card>
+  <Card title="Inter-Canister Calls" icon="arrows-left-right" href="/canisters/inter-canister-calls">
+    Learn about canister-to-canister communication
+  </Card>
+</CardGroup>

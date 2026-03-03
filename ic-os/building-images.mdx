@@ -1,0 +1,504 @@
+---
+title: Building IC-OS Images
+description: Learn how to build SetupOS, HostOS, and GuestOS images using Bazel
+---
+
+## Overview
+
+All IC-OS images (SetupOS, HostOS, and GuestOS) can be built using Bazel. This guide covers the environment setup, build commands, and output artifacts for each operating system.
+
+## Environment Setup
+
+Building IC-OS images locally requires proper environment configuration.
+
+### Required Packages
+
+The required packages are specified in `ic/ci/container/Dockerfile`. Key dependencies include:
+
+- Bazel build system
+- Docker for containerized builds
+- QEMU and KVM for testing
+- Build tools (gcc, make, etc.)
+- Ubuntu package dependencies
+
+### Installation Options
+
+<Tabs>
+  <Tab title="Container-Based (Recommended)">
+    Use the provided container script for a pre-configured environment:
+    
+    ```bash
+    # Run builds in a container with correct environment
+    ./ci/container/container-run.sh
+    ```
+    
+    This approach ensures:
+    - Consistent build environment
+    - All dependencies pre-installed
+    - Isolation from host system
+  </Tab>
+  <Tab title="Manual Installation">
+    For local installation:
+    
+    1. Install [Bazel](https://bazel.build/install)
+    2. Install dependencies from `ic/ci/container/Dockerfile`
+    3. Ensure Docker is running
+    4. Configure KVM access (for testing)
+    
+    <Warning>
+    Manual installation may lead to environment inconsistencies. The container-based approach is recommended.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Build Targets
+
+Each IC-OS image has multiple build targets representing different variants:
+
+<Tabs>
+  <Tab title="SetupOS">
+    **Available Targets:**
+    - `prod` - Production image (console disabled)
+    - `dev` - Development image (console enabled, root login)
+    
+    **Build Commands:**
+    ```bash
+    # Production SetupOS
+    bazel build //ic-os/setupos/envs/prod/...
+    
+    # Development SetupOS
+    bazel build //ic-os/setupos/envs/dev/...
+    ```
+    
+    **Output Location:**
+    ```
+    bazel-bin/ic-os/setupos/envs/<TARGET>/disk-img.tar.zst
+    ```
+  </Tab>
+  <Tab title="HostOS">
+    **Available Targets:**
+    - `prod` - Production image (console disabled)
+    - `dev` - Development image (console enabled, root login)
+    
+    **Build Commands:**
+    ```bash
+    # Production HostOS
+    bazel build //ic-os/hostos/envs/prod/...
+    
+    # Development HostOS
+    bazel build //ic-os/hostos/envs/dev/...
+    ```
+    
+    **Output Location:**
+    ```
+    bazel-bin/ic-os/hostos/envs/<TARGET>/disk-img.tar.zst
+    bazel-bin/ic-os/hostos/envs/<TARGET>/update-img.tar.zst
+    bazel-bin/ic-os/hostos/envs/<TARGET>/update-img-test.tar.zst
+    ```
+  </Tab>
+  <Tab title="GuestOS">
+    **Available Targets:**
+    - `prod` - Production image (console disabled)
+    - `dev` - Development image (console enabled, root login)
+    - `dev-malicious` - Development image with malicious replica
+    - `recovery` - Recovery mode image
+    
+    **Build Commands:**
+    ```bash
+    # Production GuestOS
+    bazel build //ic-os/guestos/envs/prod/...
+    
+    # Development GuestOS
+    bazel build //ic-os/guestos/envs/dev/...
+    
+    # Malicious variant
+    bazel build //ic-os/guestos/envs/dev-malicious/...
+    
+    # Recovery image
+    bazel build //ic-os/guestos/envs/recovery/...
+    ```
+    
+    **Output Location:**
+    ```
+    bazel-bin/ic-os/guestos/envs/<TARGET>/disk-img.tar.zst
+    bazel-bin/ic-os/guestos/envs/<TARGET>/update-img.tar.zst
+    bazel-bin/ic-os/guestos/envs/<TARGET>/update-img-test.tar.zst
+    bazel-bin/ic-os/guestos/envs/<TARGET>/launch-measurements.json
+    ```
+  </Tab>
+</Tabs>
+
+## Production vs Development Images
+
+The key differences between production and development variants:
+
+| Feature | Production (`prod`) | Development (`dev`) |
+|---------|-------------------|-------------------|
+| Console Access | Disabled | Enabled |
+| Default Login | N/A | `root` / `root` |
+| Image Size | Smaller | Larger |
+| Debug Tools | Minimal | Included |
+| Security | Hardened | Relaxed |
+| Use Case | Production nodes | Local testing |
+
+<Warning>
+Development images have username and password set to `root`. Never use `dev` images in production environments.
+</Warning>
+
+## Build Process Deep Dive
+
+IC-OS images are built through a multi-stage process:
+
+<Steps>
+  <Step title="Docker Base Image">
+    Build the base Ubuntu image with upstream packages.
+    
+    **File**: `ic-os/{setupos,hostos,guestos}/context/Dockerfile.base`
+    
+    - Installs all Ubuntu packages from `packages.common` and `packages.dev`
+    - Published weekly to [DFINITY Docker Hub](https://hub.docker.com/u/dfinity)
+    - Ensures reproducible builds by pinning package versions
+    
+    <Note>
+    Base images are pre-built by CI and pulled from Docker Hub. Local builds use `build_local_base_image = False` by default.
+    </Note>
+  </Step>
+  
+  <Step title="Docker Image Assembly">
+    Build the main system on top of the base image.
+    
+    **File**: `ic-os/{setupos,hostos,guestos}/context/Dockerfile`
+    
+    - Pulls the published base image
+    - Adds IC-specific components
+    - Configures system services
+    - All instructions must be reproducible
+  </Step>
+  
+  <Step title="Filesystem Extraction">
+    Extract the root and boot filesystems from the Docker image.
+    
+    - Root filesystem extracted (excluding `/boot`, `/var`, `/run`)
+    - Boot filesystem extracted from `/boot` directory
+    - SELinux file contexts extracted for ext4 creation
+  </Step>
+  
+  <Step title="Partition Creation">
+    Create ext4 partition images.
+    
+    **Root Partition** (`partition-root.tzst`):
+    - Created from rootfs-tree.tar
+    - Configured with SELinux contexts
+    - Optionally signed with dm-verity (GuestOS)
+    - Compressed with zstd
+    
+    **Boot Partition** (`partition-boot.tzst`):
+    - Contains kernel and initrd
+    - Includes boot arguments and GRUB config
+    - Version information embedded
+  </Step>
+  
+  <Step title="Bootloader Creation">
+    Build GRUB partition.
+    
+    **GRUB Partition** (`partition-grub.tzst`):
+    - Contains GRUB bootloader
+    - Configured for A/B partition switching
+    - Supports automatic rollback on boot failure
+  </Step>
+  
+  <Step title="Disk Image Assembly">
+    Combine all partitions into final disk image.
+    
+    **Partitions assembled**:
+    - EFI System Partition (ESP)
+    - GRUB partition
+    - Boot partition (A and optionally B)
+    - Root partition (A and optionally B)
+    - Custom partitions (if defined)
+    
+    **Output**: `disk-img.tar` (compressed to `disk-img.tar.zst`)
+  </Step>
+  
+  <Step title="Upgrade Image Creation">
+    Create upgrade images for live systems (HostOS and GuestOS only).
+    
+    **Contents**:
+    - Boot partition
+    - Root partition
+    - Version information
+    
+    **Outputs**:
+    - `update-img.tar.zst` - Production upgrade
+    - `update-img-test.tar.zst` - Test variant with modified version
+  </Step>
+  
+  <Step title="Binary Injection">
+    Inject additional IC binaries as a caching optimization.
+    
+    - IC services (replica, orchestrator)
+    - Configuration files
+    - Scripts and utilities
+    - Added late in the build process to leverage Bazel caching
+  </Step>
+</Steps>
+
+## Build Outputs
+
+Understanding the different build artifacts:
+
+<AccordionGroup>
+  <Accordion title="disk-img.tar.zst">
+    **Full disk image** for initial installation.
+    
+    - Contains all partitions (EFI, GRUB, boot, root, etc.)
+    - Used for SetupOS USB installation
+    - Used for first-time node deployment
+    - Can be written directly to disk or USB
+    
+    **Size**:
+    - SetupOS: ~2.3 GB
+    - HostOS: ~880 MB
+    - GuestOS: ~419 MB
+  </Accordion>
+  
+  <Accordion title="update-img.tar.zst">
+    **Upgrade image** for updating running systems.
+    
+    - Contains only boot and root partitions
+    - Smaller than full disk image
+    - Used by orchestrator for upgrades
+    - Downloaded and applied to inactive A/B partition
+    
+    **Size**:
+    - HostOS: ~877 MB
+    - GuestOS: ~416 MB
+    
+    <Note>
+    SetupOS does not generate update images since it's single-use.
+    </Note>
+  </Accordion>
+  
+  <Accordion title="update-img-test.tar.zst">
+    **Test variant** of the upgrade image.
+    
+    - Version string modified with `-test` suffix
+    - Used for testing upgrade process
+    - Identical content to update-img otherwise
+  </Accordion>
+  
+  <Accordion title="launch-measurements.json">
+    **AMD SEV-SNP launch measurements** (GuestOS only).
+    
+    - Contains expected measurement values
+    - Used for attestation and confidential computing
+    - Includes measurements for different vCPU counts
+    - Covers both A and B partition boot arguments
+    
+    ```json
+    {
+      "guest_launch_measurements": [
+        {
+          "measurement": [171, 205, ...],
+          "metadata": {
+            "kernel_cmdline": "..."
+          }
+        }
+      ]
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="rootfs-tree.tar">
+    **Root filesystem tree** (intermediate artifact).
+    
+    - Docker container filesystem exported as tar
+    - Used to create partition images
+    - Useful for inspection and debugging
+    - Can be loaded as Docker image for testing
+  </Accordion>
+</AccordionGroup>
+
+## Advanced Build Options
+
+### Building Local Base Images
+
+By default, builds pull pre-built base images from Docker Hub. To build base images locally:
+
+```bash
+# Use local-base variants
+bazel build //ic-os/guestos/envs/local-base-prod/...
+bazel build //ic-os/guestos/envs/local-base-dev/...
+```
+
+This sets `build_local_base_image = True` and builds `Dockerfile.base` from scratch.
+
+<Warning>
+Building local base images takes significantly longer and may produce different results if Ubuntu package versions have changed.
+</Warning>
+
+### Vulnerability Scanning
+
+Run vulnerability scans on built images:
+
+```bash
+# Scan GuestOS dev image
+bazel run //ic-os/guestos/envs/dev:vuln-scan
+
+# Output: HTML report with vulnerability findings
+```
+
+### Component File Hash
+
+Get a hash of all component files:
+
+```bash
+# Print hash of all input files
+bazel run //ic-os/guestos/envs/dev:echo-component-files-hash
+```
+
+Useful for detecting when component files have changed.
+
+## Common Build Commands
+
+<CodeGroup>
+```bash SetupOS Production
+# Build production SetupOS
+bazel build //ic-os/setupos/envs/prod/...
+
+# Output
+bazel-bin/ic-os/setupos/envs/prod/disk-img.tar.zst
+```
+
+```bash HostOS Development
+# Build development HostOS
+bazel build //ic-os/hostos/envs/dev/...
+
+# Output
+bazel-bin/ic-os/hostos/envs/dev/disk-img.tar.zst
+bazel-bin/ic-os/hostos/envs/dev/update-img.tar.zst
+bazel-bin/ic-os/hostos/envs/dev/update-img-test.tar.zst
+```
+
+```bash GuestOS All Variants
+# Build all GuestOS variants
+bazel build //ic-os/guestos/envs/prod/...
+bazel build //ic-os/guestos/envs/dev/...
+bazel build //ic-os/guestos/envs/dev-malicious/...
+bazel build //ic-os/guestos/envs/recovery/...
+
+# Each produces:
+# - disk-img.tar.zst
+# - update-img.tar.zst
+# - update-img-test.tar.zst
+# - launch-measurements.json (prod/dev only)
+```
+
+```bash All IC-OS Images
+# Build everything (will take a while)
+bazel build //ic-os/setupos/envs/prod/...
+bazel build //ic-os/hostos/envs/prod/...
+bazel build //ic-os/guestos/envs/prod/...
+```
+</CodeGroup>
+
+## Testing Images
+
+### Testing Disk Images
+
+For testing that includes both A and B partitions:
+
+```bash
+bazel build //ic-os/guestos/envs/dev:disk-img-for-tests.tar
+```
+
+This creates a disk image with `populate_b_partitions = True`, which is useful for testing A/B partition switching.
+
+### Running GuestOS Locally
+
+After building a GuestOS image:
+
+```bash
+# Extract the disk image
+tar -xvf bazel-bin/ic-os/guestos/envs/dev/disk-img.tar.zst
+
+# Run in QEMU
+qemu-system-x86_64 \
+  -machine type=q35,accel=kvm \
+  -enable-kvm \
+  -nographic \
+  -m 4G \
+  -bios /usr/share/ovmf/OVMF.fd \
+  -device vhost-vsock-pci,guest-cid=3 \
+  -drive file=disk.img,format=raw,if=virtio \
+  -netdev user,id=user.0,hostfwd=tcp::2222-:22 \
+  -device virtio-net,netdev=user.0
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Build fails with 'disk space' error">
+    Bazel builds can consume significant disk space.
+    
+    **Solutions**:
+    ```bash
+    # Clean Bazel cache
+    bazel clean --expunge
+    
+    # Remove old Docker images
+    docker system prune -a
+    ```
+  </Accordion>
+  
+  <Accordion title="Build fails to download base image">
+    Network issues or Docker Hub rate limits.
+    
+    **Solutions**:
+    - Check Docker Hub is accessible
+    - Use local base image build:
+      ```bash
+      bazel build //ic-os/guestos/envs/local-base-dev/...
+      ```
+  </Accordion>
+  
+  <Accordion title="Permissions error when building">
+    Docker daemon may require permissions.
+    
+    **Solutions**:
+    ```bash
+    # Add user to docker group
+    sudo usermod -aG docker $USER
+    newgrp docker
+    
+    # Or use container-run.sh which handles this
+    ./ci/container/container-run.sh
+    ```
+  </Accordion>
+  
+  <Accordion title="Build is very slow">
+    First builds take longer; subsequent builds leverage caching.
+    
+    **Tips**:
+    - Use container-based builds for better caching
+    - Avoid `bazel clean` unless necessary
+    - Build only what you need (specific target vs `...`)
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SetupOS" icon="usb-drive" href="/ic-os/setupos">
+    Learn about SetupOS installation process
+  </Card>
+  <Card title="HostOS" icon="server" href="/ic-os/hostos">
+    Explore HostOS architecture
+  </Card>
+  <Card title="GuestOS" icon="microchip" href="/ic-os/guestos">
+    Understand GuestOS and IC protocol
+  </Card>
+  <Card title="Overview" icon="book" href="/ic-os/overview">
+    Back to IC-OS overview
+  </Card>
+</CardGroup>

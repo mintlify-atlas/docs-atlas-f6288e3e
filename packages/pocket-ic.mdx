@@ -1,0 +1,372 @@
+---
+title: PocketIC
+description: A comprehensive canister testing platform for the Internet Computer
+---
+
+PocketIC is a local canister testing solution that provides a complete replica environment for testing Internet Computer canisters. It works together with the PocketIC server, allowing you to interact with local IC instances and test canisters in isolation.
+
+## Overview
+
+With PocketIC Rust, testing canisters is as simple as calling Rust functions. The library provides a synchronous and asynchronous API for creating instances, managing canisters, and executing calls.
+
+<Info>
+PocketIC promotes **test isolation** by providing a unique IC instance per test. Each `PocketIc` instance is automatically cleaned up when dropped.
+</Info>
+
+## Installation
+
+Add PocketIC to your project:
+
+```bash
+cargo add pocket-ic
+```
+
+Or add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+pocket-ic = "12.0"
+```
+
+## Quick Start
+
+### Download the PocketIC Server
+
+1. Download the latest PocketIC server from the [PocketIC repository](https://github.com/dfinity/pocketic)
+2. Ensure the version is [compatible](https://docs.google.com/document/d/1VYmHUTjrgbzRHtsAyRrI5cj-gWGs7ktTnutPvUMJioU) with your library version
+3. Ungzip the downloaded file
+4. On UNIX: make the file executable
+5. Specify the path using `PocketIcBuilder::with_server_binary` or the `POCKET_IC_BIN` environment variable
+
+### Basic Example
+
+Here's a simple counter canister test:
+
+```rust
+use candid::{Principal, encode_one};
+use pocket_ic::PocketIc;
+
+const INIT_CYCLES: u128 = 2_000_000_000_000; // 2T cycles
+
+#[test]
+fn test_counter_canister() {
+    let pic = PocketIc::new();
+
+    // Create a canister and charge it with 2T cycles
+    let canister_id = pic.create_canister();
+    pic.add_cycles(canister_id, INIT_CYCLES);
+
+    // Install the counter canister wasm
+    let counter_wasm = std::fs::read("counter.wasm").unwrap();
+    pic.install_canister(canister_id, counter_wasm, vec![], None);
+
+    // Make calls to the canister
+    let reply = call_counter_can(&pic, canister_id, "read");
+    assert_eq!(reply, vec![0, 0, 0, 0]);
+    
+    let reply = call_counter_can(&pic, canister_id, "write");
+    assert_eq!(reply, vec![1, 0, 0, 0]);
+    
+    let reply = call_counter_can(&pic, canister_id, "read");
+    assert_eq!(reply, vec![1, 0, 0, 0]);
+}
+
+fn call_counter_can(pic: &PocketIc, canister_id: Principal, method: &str) -> Vec<u8> {
+    pic.update_call(
+        canister_id,
+        Principal::anonymous(),
+        method,
+        encode_one(()).unwrap(),
+    )
+    .expect("Failed to call counter canister")
+}
+```
+
+## Core Features
+
+### Instance Management
+
+Create PocketIC instances with custom configurations:
+
+```rust
+use pocket_ic::PocketIcBuilder;
+
+// Create instance with specific subnet configuration
+let pic = PocketIcBuilder::new()
+    .with_nns_subnet()
+    .with_application_subnet()
+    .build();
+```
+
+### Canister Operations
+
+```rust
+// Create and install a canister
+let canister_id = pic.create_canister();
+pic.add_cycles(canister_id, 2_000_000_000_000);
+pic.install_canister(canister_id, wasm_module, vec![], None);
+
+// Upgrade a canister
+pic.upgrade_canister(canister_id, new_wasm, vec![], None)?;
+
+// Make update calls
+let result = pic.update_call(
+    canister_id,
+    sender,
+    "method_name",
+    payload,
+)?;
+
+// Make query calls
+let result = pic.query_call(
+    canister_id,
+    sender,
+    "query_method",
+    payload,
+)?;
+```
+
+### Concurrent Update Calls
+
+Submit multiple update calls for concurrent execution:
+
+```rust
+// Submit calls without executing them
+let msg_id1 = pic.submit_call(
+    canister_id,
+    Principal::anonymous(),
+    "method1",
+    encode_one(()).unwrap(),
+).unwrap();
+
+let msg_id2 = pic.submit_call(
+    canister_id,
+    Principal::anonymous(),
+    "method2",
+    encode_one(()).unwrap(),
+).unwrap();
+
+// Execute and await both calls concurrently
+let res1 = pic.await_call(msg_id1).unwrap();
+let res2 = pic.await_call(msg_id2).unwrap();
+```
+
+### Time Management
+
+Control time in your tests:
+
+```rust
+use pocket_ic::common::Time;
+use std::time::{SystemTime, Duration};
+
+// Set specific time
+let time = SystemTime::now().into();
+pic.set_time(time);
+
+// Advance time
+let new_time = Time::from_nanos_since_unix_epoch(
+    time.as_nanos_since_unix_epoch() + Duration::from_secs(60).as_nanos() as u64
+);
+pic.set_time(new_time);
+```
+
+## Advanced Features
+
+### Live Mode
+
+Enable "live" mode for agent-based testing:
+
+```rust
+let mut pic = PocketIcBuilder::new()
+    .with_nns_subnet()
+    .with_application_subnet()
+    .build();
+
+// Enable live mode
+let endpoint = pic.make_live(None);
+
+// Use IC agent to interact with the instance
+let agent = ic_agent::Agent::builder()
+    .with_url(endpoint)
+    .build()
+    .unwrap();
+agent.fetch_root_key().await.unwrap();
+```
+
+<Warning>
+Live mode makes the PocketIC instance **non-deterministic**. Time advances automatically and messages are executed concurrently. Use `pic.stop_live()` to disable live mode.
+</Warning>
+
+### Asynchronous API
+
+Use PocketIC in async contexts:
+
+```rust
+use pocket_ic::nonblocking::PocketIc;
+
+#[tokio::test]
+async fn test_counter_async() {
+    let pic = PocketIc::new().await;
+    
+    let canister_id = pic.create_canister().await;
+    pic.add_cycles(canister_id, 2_000_000_000_000).await;
+    
+    // ... perform operations ...
+    
+    // Manually drop the instance
+    pic.drop().await;
+}
+```
+
+<Note>
+PocketIC instances created with the `nonblocking` module must be dropped manually, as Rust doesn't support asynchronous drop yet.
+</Note>
+
+### State Persistence
+
+Persist and reuse PocketIC instance state:
+
+```rust
+use std::path::PathBuf;
+
+// Initialize state directory
+let state_dir = PathBuf::from("/path/to/state");
+let pic = PocketIcBuilder::new()
+    .with_state_dir(state_dir.clone())
+    .with_application_subnet()
+    .build();
+
+// Create and install canister
+let canister_id = pic.create_canister();
+pic.install_canister(canister_id, wasm, vec![], None);
+
+// Later, resume from saved state
+let pic = PocketIcBuilder::new()
+    .with_state_dir(state_dir)
+    .build();
+
+// Canister is still available
+pic.query_call(canister_id, Principal::anonymous(), "read", vec![]).unwrap();
+```
+
+### Canister HTTP Outcalls
+
+Test HTTP outcalls deterministically:
+
+```rust
+// Submit call that makes HTTP outcall
+let call_id = pic.submit_call(
+    canister_id,
+    Principal::anonymous(),
+    "http_request",
+    encode_one(()).unwrap(),
+).unwrap();
+
+// Execute rounds to process the outcall
+pic.tick();
+pic.tick();
+
+// Get pending HTTP outcalls
+let http_requests = pic.get_canister_http();
+assert_eq!(http_requests.len(), 1);
+
+// Mock response
+let mock_response = MockCanisterHttpResponse {
+    subnet_id: http_requests[0].subnet_id,
+    request_id: http_requests[0].request_id,
+    response: CanisterHttpResponse::CanisterHttpReply(CanisterHttpReply {
+        status: 200,
+        headers: vec![],
+        body: b"response".to_vec(),
+    }),
+    additional_responses: vec![],
+};
+pic.mock_canister_http_response(mock_response);
+
+// Await the original call
+let reply = pic.await_call(call_id).unwrap();
+```
+
+### Bitcoin Integration
+
+Test Bitcoin integration:
+
+```rust
+use pocket_ic::{IcpFeatures, IcpFeaturesConfig};
+
+let icp_features = IcpFeatures {
+    bitcoin: Some(IcpFeaturesConfig::DefaultConfig),
+    ..Default::default()
+};
+
+let pic = PocketIcBuilder::new()
+    .with_nns_subnet()
+    .with_ii_subnet()          // for tECDSA keys
+    .with_bitcoin_subnet()
+    .with_application_subnet()
+    .with_bitcoind_addr(bitcoind_addr)
+    .with_icp_features(icp_features)
+    .build();
+
+// Set to current time for Bitcoin integration
+pic.set_time(SystemTime::now().into());
+```
+
+## Configuration
+
+### Environment Variables
+
+- `POCKET_IC_BIN` - Path to the PocketIC server binary
+- `POCKET_IC_MUTE_SERVER` - Silence server output (set to any value)
+
+### Builder Options
+
+```rust
+let pic = PocketIcBuilder::new()
+    .with_server_binary(PathBuf::from("/path/to/pocket-ic"))
+    .with_nns_subnet()
+    .with_ii_subnet()
+    .with_application_subnet()
+    .with_state_dir(state_dir)
+    .build();
+```
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="API Documentation" icon="book" href="https://docs.rs/pocket-ic/">
+    Complete API reference on docs.rs
+  </Card>
+  
+  <Card title="PocketIC Repository" icon="github" href="https://github.com/dfinity/pocketic">
+    Server downloads and documentation
+  </Card>
+  
+  <Card title="Hello World Example" icon="code" href="https://github.com/dfinity/icp-hello-world-rust">
+    Minimal PocketIC setup example
+  </Card>
+  
+  <Card title="OpenChat Tests" icon="flask" href="https://github.com/open-chat-labs/open-chat/tree/master/backend/integration_tests/src">
+    Complex integration test suite
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Test Isolation">
+    Use one `PocketIc` instance per test to ensure deterministic behavior and avoid test interference.
+  </Accordion>
+  
+  <Accordion title="Avoid Live Mode in CI">
+    Live mode introduces non-determinism. Use it only for interactive testing or specific agent-based scenarios.
+  </Accordion>
+  
+  <Accordion title="Clean Up Resources">
+    PocketIC instances are automatically cleaned up when dropped. In async code, call `.drop().await` explicitly.
+  </Accordion>
+  
+  <Accordion title="Version Compatibility">
+    Ensure your PocketIC library version is compatible with the server binary version. Check the [compatibility matrix](https://docs.google.com/document/d/1VYmHUTjrgbzRHtsAyRrI5cj-gWGs7ktTnutPvUMJioU).
+  </Accordion>
+</AccordionGroup>

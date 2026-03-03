@@ -1,0 +1,586 @@
+---
+title: Testing
+description: Comprehensive guide to testing in the Internet Computer repository
+---
+
+The Internet Computer uses a multi-layered testing approach to ensure correctness, security, and reliability of the protocol implementation.
+
+## Testing Philosophy
+
+The IC testing strategy includes:
+
+1. **Unit tests** - Test individual components in isolation
+2. **Integration tests** - Test interaction between components
+3. **System tests** - End-to-end tests with full IC deployment
+4. **Property tests** - Randomized testing with `proptest`
+5. **Benchmark tests** - Performance regression testing
+
+## Quick Start
+
+### Running Tests Locally
+
+<Steps>
+  <Step title="Enter the dev container">
+    ```bash
+    ./ci/container/container-run.sh
+    ```
+  </Step>
+  
+  <Step title="Run linting checks">
+    ```bash
+    ./ci/scripts/rust-lint.sh
+    ```
+    
+    Or run individual commands:
+    ```bash
+    cargo clippy
+    cargo fmt --check
+    ```
+  </Step>
+  
+  <Step title="Run unit and integration tests">
+    ```bash
+    # Using Bazel (recommended)
+    bazel test //... --test_tag_filters=-system_test
+    
+    # Or using Cargo for a specific package
+    cargo test -p ic-consensus
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+**Do not run system tests** unless you're on the DFINITY network. They require special infrastructure only available internally.
+</Warning>
+
+## Unit Tests
+
+Unit tests are co-located with source code and test individual functions or modules.
+
+### Writing Unit Tests
+
+```rust
+// In src/lib.rs or any module file
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_functionality() {
+        let result = my_function(42);
+        assert_eq!(result, expected_value);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid input")]
+    fn test_error_handling() {
+        my_function_that_should_panic();
+    }
+}
+```
+
+### Running Unit Tests
+
+```bash
+# Run all tests in a crate
+cargo test -p ic-crypto
+
+# Run specific test
+cargo test -p ic-crypto test_signature_verification
+
+# Run tests with output
+cargo test -p ic-crypto -- --nocapture
+
+# Using Bazel
+bazel test //rs/crypto:crypto_test
+```
+
+## Integration Tests
+
+Integration tests are located in the `tests/` directory within each crate or in dedicated test crates.
+
+### Structure
+
+```text
+rs/consensus/
+├── src/           # Source code with unit tests
+├── tests/         # Integration tests
+│   ├── integration_test_1.rs
+│   └── integration_test_2.rs
+└── Cargo.toml
+```
+
+### Example Integration Test
+
+```rust
+// tests/consensus_integration_test.rs
+use ic_consensus::*;
+use ic_test_utilities::consensus::*;
+
+#[test]
+fn test_consensus_with_multiple_nodes() {
+    let env = TestEnvironment::new();
+    let nodes = create_test_nodes(4);
+    
+    // Run consensus protocol
+    let result = run_consensus(&env, nodes);
+    
+    assert!(result.is_ok());
+}
+```
+
+## System Tests
+
+System tests are end-to-end tests that deploy a complete Internet Computer instance with multiple nodes running in virtual machines.
+
+<Info>
+For detailed system test documentation, see the [Testing Terminology](https://www.notion.so/Testing-Terminology-8cc0735dfcd945959f8d47caedf058b5) and the [rs/tests README](https://github.com/dfinity/ic/blob/master/rs/tests/README.md).
+</Info>
+
+### System Test Architecture
+
+System tests use a test driver that:
+
+1. Deploys VMs on the Farm infrastructure
+2. Bootstraps an IC instance with `ic-prep`
+3. Runs test scenarios
+4. Collects logs and artifacts
+5. Tears down resources
+
+### Writing System Tests
+
+System tests are defined in `rs/tests/` with a setup and test function:
+
+```rust
+use ic_tests::driver::test_env::TestEnv;
+use ic_tests::driver::ic::{InternetComputer, Subnet};
+
+/// Setup function: deploys the IC
+pub fn setup(env: TestEnv) {
+    InternetComputer::new()
+        .add_subnet(Subnet::new(SubnetType::System).add_nodes(4))
+        .add_subnet(Subnet::new(SubnetType::Application).add_nodes(13))
+        .setup_and_start(&env)
+        .expect("Failed to setup IC");
+}
+
+/// Test function: runs the actual test
+pub fn test(env: TestEnv) {
+    let topology = env.topology_snapshot();
+    let node = topology.root_subnet().nodes().next().unwrap();
+    
+    // Install a canister
+    let canister_id = node.create_and_install_canister(...);
+    
+    // Call the canister
+    let result = node.call_canister(canister_id, "method", vec![]);
+    
+    assert!(result.is_ok());
+}
+```
+
+### Running System Tests
+
+<Warning>
+System tests require access to DFINITY's internal Farm infrastructure.
+</Warning>
+
+```bash
+# In the dev container
+bazel test --test_output=streamed //rs/tests:my_test_target
+
+# Or using ict
+ict test //rs/tests:my_test_target
+```
+
+### Test Environment
+
+The test environment is a directory structure containing:
+
+- Infrastructure configuration
+- Topology data
+- Test logs
+- Artifacts from the test run
+
+```text
+working_dir/
+└── 20220428_224049/          # Timestamp
+    ├── api_test/               # POT name
+    │   ├── setup/
+    │   │   ├── ic_prep/        # Initial registry data
+    │   │   └── test.log
+    │   └── tests/
+    │       └── my_test/
+    │           ├── test.log
+    │           └── test_execution_result.json
+    └── system_env/             # Global environment
+```
+
+## Property-Based Testing
+
+The IC uses [proptest](https://altsysrq.github.io/proptest-book/) for property-based testing.
+
+### Writing Property Tests
+
+```rust
+use proptest::prelude::*;
+
+proptest! {
+    #[test]
+    fn test_serialization_roundtrip(value in any::<MyType>()) {
+        let serialized = serialize(&value);
+        let deserialized = deserialize(&serialized).unwrap();
+        prop_assert_eq!(value, deserialized);
+    }
+    
+    #[test]
+    fn test_invariant(input in 0u64..1000) {
+        let result = my_function(input);
+        prop_assert!(result >= input); // Property: output >= input
+    }
+}
+```
+
+### Custom Strategies
+
+```rust
+use proptest::strategy::{Strategy, Just};
+
+fn valid_node_id() -> impl Strategy<Value = NodeId> {
+    (0..1000u64).prop_map(NodeId::from)
+}
+
+fn valid_subnet_config() -> impl Strategy<Value = SubnetConfig> {
+    (valid_node_id(), 1..100usize).prop_map(|(node_id, size)| {
+        SubnetConfig::new(node_id, size)
+    })
+}
+
+proptest! {
+    #[test]
+    fn test_with_valid_subnet(config in valid_subnet_config()) {
+        // Test with randomly generated valid subnet configs
+        let subnet = create_subnet(config);
+        prop_assert!(subnet.is_valid());
+    }
+}
+```
+
+## State Machine Tests
+
+State machine tests provide a lightweight way to test canister behavior without a full IC deployment.
+
+```rust
+use ic_state_machine_tests::StateMachine;
+
+#[test]
+fn test_canister_lifecycle() {
+    let env = StateMachine::new();
+    
+    // Install canister
+    let canister_id = env.install_canister(
+        wasm_binary,
+        vec![], // args
+        None,   // cycles
+    ).unwrap();
+    
+    // Call canister
+    let result = env.execute_ingress(
+        canister_id,
+        "method_name",
+        encode_args(args),
+    ).unwrap();
+    
+    // Assert result
+    assert_eq!(decode_result(result), expected);
+}
+```
+
+## Benchmark Tests
+
+Benchmark tests use [Criterion](https://github.com/bheisler/criterion.rs) for performance testing.
+
+### Writing Benchmarks
+
+```rust
+// benches/my_benchmark.rs
+use criterion::{criterion_group, criterion_main, Criterion};
+
+fn benchmark_crypto_operation(c: &mut Criterion) {
+    c.bench_function("signature_verification", |b| {
+        let (pk, sig, msg) = setup_test_data();
+        b.iter(|| {
+            verify_signature(&pk, &sig, &msg)
+        });
+    });
+}
+
+criterion_group!(benches, benchmark_crypto_operation);
+criterion_main!(benches);
+```
+
+### Running Benchmarks
+
+```bash
+# Run benchmarks for a specific crate
+cargo bench -p ic-crypto
+
+# Using Bazel
+bazel run //rs/crypto:crypto_bench
+```
+
+## Test Utilities
+
+The repository provides extensive test utilities:
+
+### Mock Implementations
+
+```rust
+use ic_interfaces_mocks::consensus::MockConsensus;
+use mockall::predicate::*;
+
+#[test]
+fn test_with_mock() {
+    let mut mock = MockConsensus::new();
+    mock.expect_on_state_change()
+        .times(1)
+        .returning(|_| Ok(()));
+    
+    // Use mock in test
+    let result = component.process(&mock);
+    assert!(result.is_ok());
+}
+```
+
+### Test Data Builders
+
+```rust
+use ic_test_utilities::types::ids::{node_test_id, subnet_test_id};
+use ic_test_utilities::consensus::fake::*;
+
+#[test]
+fn test_with_builder() {
+    let block = BlockBuilder::new()
+        .with_parent(parent_hash)
+        .with_height(42)
+        .with_payload(vec![1, 2, 3])
+        .build();
+    
+    assert_eq!(block.height(), 42);
+}
+```
+
+### Common Test Utilities
+
+<AccordionGroup>
+  <Accordion title="rs/test_utilities/">
+    - `artifact_pool` - Artifact pool test utilities
+    - `consensus` - Consensus test helpers
+    - `identity` - Test identity and key generation
+    - `types` - Test data type builders
+    - `logger` - Test logging utilities
+  </Accordion>
+
+  <Accordion title="rs/crypto/test_utils/">
+    - Cryptographic test utilities
+    - Key generation for testing
+    - Mock crypto components
+  </Accordion>
+
+  <Accordion title="rs/state_machine_tests/">
+    - Lightweight canister testing framework
+    - No full IC deployment needed
+  </Accordion>
+</AccordionGroup>
+
+## Testing Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Reproducibility" icon="repeat">
+    - Fix random seeds in tests
+    - Log all random seeds used
+    - Avoid system-dependent behavior
+    - Make tests deterministic
+  </Card>
+  
+  <Card title="Documentation" icon="book">
+    - Add ASCIIDOC descriptions to test files
+    - Document test purpose and setup
+    - Explain non-obvious test scenarios
+  </Card>
+  
+  <Card title="Logging" icon="file-lines">
+    - Use test environment logging primitives
+    - Avoid `println!` in tests
+    - Log enough context for debugging
+  </Card>
+  
+  <Card title="Isolation" icon="shield">
+    - Don't make filesystem assumptions
+    - Use provided test environment paths
+    - Clean up resources after tests
+  </Card>
+</CardGroup>
+
+### Guiding Principles
+
+<AccordionGroup>
+  <Accordion title="Keep tests reproducible">
+    ```rust
+    // Good: Fixed seed
+    let mut rng = ChaChaRng::seed_from_u64(42);
+    
+    // Bad: Non-deterministic
+    let mut rng = thread_rng();
+    ```
+  </Accordion>
+
+  <Accordion title="Use proper logging">
+    ```rust
+    // Good: Use test environment logger
+    info!(env.logger(), "Test started with config: {:?}", config);
+    
+    // Bad: Direct println
+    println!("Test started");
+    ```
+  </Accordion>
+
+  <Accordion title="Don't make environment assumptions">
+    ```rust
+    // Good: Use test environment
+    let path = env.get_path("data");
+    
+    // Bad: Hardcoded paths
+    let path = "/tmp/test_data";
+    ```
+  </Accordion>
+
+  <Accordion title="Document complex tests">
+    ```rust
+    /// Test that consensus reaches agreement even when 1/3 of nodes
+    /// are Byzantine and send conflicting messages.
+    ///
+    /// Setup:
+    /// - 4 honest nodes
+    /// - 2 Byzantine nodes sending random blocks
+    ///
+    /// Expected:
+    /// - Consensus still achieved within 10 rounds
+    /// - All honest nodes agree on the same chain
+    #[test]
+    fn test_byzantine_fault_tolerance() {
+        // ...
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## CI/CD Testing
+
+### Pre-commit Checks
+
+The repository uses pre-commit hooks:
+
+```bash
+# Install pre-commit hooks
+pre-commit install
+
+# Run manually
+pre-commit run --all-files
+```
+
+### CI Pipeline
+
+The CI pipeline runs:
+
+1. **Linting** - Clippy, rustfmt, cargo-deny
+2. **Unit tests** - All workspace unit tests
+3. **Integration tests** - Component integration tests
+4. **System tests** - Selected system tests
+5. **Build verification** - Ensure all targets build
+
+<Info>
+For external contributors, CI is triggered manually by reviewers for security reasons.
+</Info>
+
+## Test Organization
+
+Organize tests by putting them in the appropriate location:
+
+```text
+rs/my_component/
+├── src/
+│   ├── lib.rs              # Unit tests in #[cfg(test)] modules
+│   └── submodule.rs        # More unit tests
+├── tests/
+│   ├── integration_test.rs # Integration tests
+│   └── common/
+│       └── mod.rs          # Shared test utilities
+├── benches/
+│   └── benchmarks.rs       # Criterion benchmarks
+└── Cargo.toml
+```
+
+System tests go in `rs/tests/`:
+
+```text
+rs/tests/
+├── consensus/
+│   ├── consensus_performance_test.rs
+│   └── byzantine_test.rs
+├── execution/
+│   └── canister_lifecycle_test.rs
+├── driver/                 # Test infrastructure
+└── Cargo.toml
+```
+
+## Troubleshooting Tests
+
+<AccordionGroup>
+  <Accordion title="Test fails only in CI">
+    Common causes:
+    - Non-deterministic behavior (fix random seeds)
+    - Filesystem assumptions (use test environment paths)
+    - Timing issues (don't rely on precise timing)
+    - Resource constraints (reduce test resource usage)
+  </Accordion>
+
+  <Accordion title="Slow tests">
+    ```bash
+    # Profile test execution time
+    cargo test -- --nocapture --test-threads=1
+    
+    # Run specific slow test
+    cargo test slow_test -- --nocapture
+    
+    # Use criterion for benchmark tests instead
+    cargo bench
+    ```
+  </Accordion>
+
+  <Accordion title="Flaky tests">
+    Investigate:
+    - Race conditions
+    - Non-deterministic inputs
+    - Shared mutable state
+    - External dependencies
+    
+    Fix by:
+    - Adding proper synchronization
+    - Using fixed seeds
+    - Isolating test state
+    - Mocking external dependencies
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Code Structure" icon="folder-tree" href="/contributing/code-structure">
+    Understand where to find components to test
+  </Card>
+  
+  <Card title="Getting Started" icon="rocket" href="/contributing/getting-started">
+    Set up your development environment
+  </Card>
+</CardGroup>

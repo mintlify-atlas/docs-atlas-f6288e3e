@@ -1,0 +1,339 @@
+---
+title: GuestOS
+description: GuestOS executes the core Internet Computer protocol inside a virtual machine on HostOS
+---
+
+## Introduction
+
+**GuestOS** refers to the operating system running inside a QEMU virtual machine on the HostOS. A GuestOS image consists of the base Ubuntu system, along with the replica and orchestrator binaries. The IC software runs inside the GuestOS virtual machine.
+
+The GuestOS virtual machine ensures:
+- Consistent runtime environment across various hardware platforms
+- Unified method for upgrading the GuestOS and all its services
+- Isolation from the hypervisor layer
+- Deterministic execution environment for consensus
+
+## Core Components
+
+<CardGroup cols={3}>
+  <Card title="Replica" icon="server">
+    Core IC protocol implementation that processes blocks and maintains state
+  </Card>
+  <Card title="Orchestrator" icon="gears">
+    Manages replica lifecycle, upgrades, and subnet coordination
+  </Card>
+  <Card title="Ubuntu Base" icon="ubuntu">
+    Minimal Ubuntu system optimized for IC workloads
+  </Card>
+</CardGroup>
+
+## Build Variants
+
+GuestOS has the most build variants among IC-OS images:
+
+<Tabs>
+  <Tab title="Production">
+    **Target**: `prod`
+    
+    - Console access disabled
+    - Used for production subnets
+    - Enhanced security posture
+    - Image size: ~419 MB (disk), ~416 MB (update)
+    - Includes SEV launch measurements
+    
+    ```bash
+    bazel build //ic-os/guestos/envs/prod/...
+    ```
+  </Tab>
+  <Tab title="Development">
+    **Target**: `dev`
+    
+    - Console access enabled
+    - Username and password: `root`
+    - Used for local testing and development
+    - Includes debugging tools
+    - SEV measurements for 16 and 64 vCPUs
+    
+    ```bash
+    bazel build //ic-os/guestos/envs/dev/...
+    ```
+  </Tab>
+  <Tab title="Dev-Malicious">
+    **Target**: `dev-malicious`
+    
+    - Bundles the `malicious_replica` for testing
+    - Used for consensus testing and validation
+    - Console access enabled
+    - Development tools included
+    
+    ```bash
+    bazel build //ic-os/guestos/envs/dev-malicious/...
+    ```
+  </Tab>
+  <Tab title="Recovery">
+    **Target**: `recovery`
+    
+    - Special recovery mode for subnet recovery
+    - Console access disabled
+    - Used when subnets need manual intervention
+    - Includes recovery tools and utilities
+    
+    ```bash
+    bazel build //ic-os/guestos/envs/recovery/...
+    ```
+  </Tab>
+</Tabs>
+
+## Building GuestOS
+
+GuestOS images can be built using Bazel:
+
+```bash
+# Build production GuestOS
+bazel build //ic-os/guestos/envs/prod/...
+
+# Build development GuestOS
+bazel build //ic-os/guestos/envs/dev/...
+
+# Build malicious variant for testing
+bazel build //ic-os/guestos/envs/dev-malicious/...
+
+# Build recovery image
+bazel build //ic-os/guestos/envs/recovery/...
+
+# Output location
+# Disk image: bazel-bin/ic-os/guestos/envs/<TARGET>/disk-img.tar.zst
+# Update image: bazel-bin/ic-os/guestos/envs/<TARGET>/update-img.tar.zst
+```
+
+The build produces:
+- **disk-img.tar.zst**: Full disk image for initial installation
+- **update-img.tar.zst**: Update image for upgrading running systems
+- **update-img-test.tar.zst**: Test variant of update image
+- **launch-measurements.json**: AMD SEV-SNP launch measurements (prod/dev only)
+
+<Note>
+GuestOS is configured with `generate_launch_measurements = True` to support AMD SEV-SNP encrypted virtualization.
+</Note>
+
+## Running GuestOS Locally
+
+You can run GuestOS locally using QEMU for development and testing.
+
+### Prerequisites
+
+- QEMU with qemu-system and qemu-kvm installed
+- KVM support enabled in your kernel
+- OVMF UEFI firmware
+
+### Running the Image
+
+```bash
+qemu-system-x86_64 \
+  -machine type=q35,accel=kvm \
+  -enable-kvm \
+  -nographic \
+  -m 4G \
+  -bios /usr/share/ovmf/OVMF.fd \
+  -device vhost-vsock-pci,guest-cid=$CID \
+  -drive file=disk.img,format=raw,if=virtio \
+  -netdev user,id=user.0,hostfwd=tcp::2222-:22 \
+  -device virtio-net,netdev=user.0
+```
+
+<Note>
+Press `Ctrl-A` followed by `x` to exit the QEMU console.
+</Note>
+
+### Local Development
+
+For local development of the Ubuntu system:
+
+1. Ubuntu configuration and system logic is in `ic-os/guestos/components/`
+2. See `ic-os/components/README.adoc` for instructions on modifying the OS
+3. Refer to documentation in `ic-os/guestos/docs/` for detailed information
+
+## Partitioning
+
+GuestOS uses a similar A/B partitioning scheme as HostOS for zero-downtime updates:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    GuestOS Disk                         │
+├──────┬──────┬────────────────────────────────────────┬──┤
+│ EFI  │ GRUB │   LVM Physical Volume                  │  │
+├──────┴──────┴────────────────────────────────────────┴──┤
+│  ┌───────┬──────┬──────┬──────┬──────┬──────┬──────┬─┐ │
+│  │Config │Boot A│Root A│Var A │Boot B│Root B│Var B │E│ │
+│  └───────┴──────┴──────┴──────┴──────┴──────┴──────┴─┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+Partitions:
+- **Config**: Configuration partition (100 MB)
+- **Boot A/B**: Boot partitions with kernel and initrd (1 GB each)
+- **Root A/B**: Root filesystems mounted read-only (10 GB each)
+- **Var A/B**: Variable data including IC state and logs (10 GB each)
+- **Empty**: Remaining space allocated to GuestOS
+
+### Root Partition Security
+
+GuestOS root partitions use dm-verity for security:
+
+<Steps>
+  <Step title="Read-Only Filesystem">
+    Root partition is mounted read-only using ext4.
+  </Step>
+  <Step title="dm-verity Signing">
+    Root partition is signed with dm-verity hash (when `requires_root_signing = True`).
+  </Step>
+  <Step title="Boot Argument Substitution">
+    ROOT_HASH is substituted into kernel boot arguments.
+  </Step>
+  <Step title="Kernel Verification">
+    Kernel verifies the root filesystem on boot using the hash.
+  </Step>
+</Steps>
+
+This ensures the root filesystem cannot be tampered with during runtime.
+
+## AMD SEV-SNP Support
+
+GuestOS supports AMD Secure Encrypted Virtualization (SEV-SNP) for confidential computing:
+
+### Launch Measurements
+
+GuestOS generates launch measurements for AMD SEV-SNP attestation:
+
+```bash
+# Production: 64 vCPUs
+# Development: 16 and 64 vCPUs
+
+# Measurements include:
+# - OVMF firmware hash
+# - Kernel hash
+# - Initrd hash
+# - Kernel command line
+```
+
+The vCPU count in launch measurements must match the VM configuration:
+- **16 vCPUs**: Local dev testing (per `deployment.json.template`)
+- **64 vCPUs**: Production environments
+
+<Note>
+Launch measurements are stored in `launch-measurements.json` and include metadata about the kernel command line for both A and B partitions.
+</Note>
+
+## Update Process
+
+GuestOS updates are orchestrated through the Internet Computer governance system:
+
+<Steps>
+  <Step title="Proposal Submission">
+    A blessed upgrade proposal is submitted to the NNS.
+  </Step>
+  <Step title="Governance Approval">
+    The proposal is voted on and approved by the community.
+  </Step>
+  <Step title="Orchestrator Download">
+    The orchestrator downloads the update image from the blessed URL.
+  </Step>
+  <Step title="Write to Inactive Partition">
+    The update is written to the inactive A or B partition.
+  </Step>
+  <Step title="Verification">
+    The update image is verified using checksums and signatures.
+  </Step>
+  <Step title="Controlled Rollout">
+    Nodes reboot one at a time to maintain subnet liveness.
+  </Step>
+  <Step title="Automatic Rollback">
+    If the new partition fails health checks, the system rolls back automatically.
+  </Step>
+</Steps>
+
+## Performance Benchmarking
+
+Performance benchmarks are run on GuestOS daily during the nightly `Bazel Test Bare Metal` job.
+
+### Benchmark Execution
+
+- Runs on actual hardware (not virtualized)
+- Commands from `ic-os/dev-tools/bare_metal_deployment/benchmark_runner.sh`
+- Results placed in `/results` folder on the node
+- All results dumped into CI job logs
+
+<Note>
+For manual benchmark execution, refer to the instructions in `ic-os/dev-tools/bare_metal_deployment/README.md`.
+</Note>
+
+## IC Protocol Components
+
+The following components run inside GuestOS:
+
+<AccordionGroup>
+  <Accordion title="Replica">
+    The replica binary is the core of the IC protocol:
+    - Processes canister smart contract execution
+    - Participates in consensus
+    - Maintains the replicated state
+    - Handles inter-canister and cross-subnet messages
+  </Accordion>
+  
+  <Accordion title="Orchestrator">
+    The orchestrator manages the replica lifecycle:
+    - Monitors subnet membership changes
+    - Coordinates upgrades
+    - Manages configuration updates
+    - Handles node registration and removal
+  </Accordion>
+  
+  <Accordion title="Boundary Node Services (Optional)">
+    When running as a boundary node:
+    - HTTP gateway for canister access
+    - Load balancing across replicas
+    - Caching and rate limiting
+  </Accordion>
+</AccordionGroup>
+
+## Development Workflow
+
+<Steps>
+  <Step title="Make Changes">
+    Modify files in `ic-os/components/` or add new components.
+  </Step>
+  <Step title="Update Build Files">
+    Enumerate new files in `components/guestos.bzl`.
+  </Step>
+  <Step title="Build Dev Image">
+    ```bash
+    bazel build //ic-os/guestos/envs/dev/...
+    ```
+  </Step>
+  <Step title="Test Locally">
+    Run the image in QEMU for testing.
+  </Step>
+  <Step title="Run Tests">
+    Execute component conformance tests:
+    ```bash
+    bazel test //ic-os/guestos/...
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Building Images" icon="hammer" href="/ic-os/building-images">
+    Learn how to build GuestOS images locally
+  </Card>
+  <Card title="HostOS" icon="server" href="/ic-os/hostos">
+    Understand the hypervisor that runs GuestOS
+  </Card>
+  <Card title="Components" icon="puzzle-piece" href="/ic-os/overview#managing-ic-os-files">
+    Learn how to add or modify GuestOS components
+  </Card>
+  <Card title="Overview" icon="book" href="/ic-os/overview">
+    Back to IC-OS overview
+  </Card>
+</CardGroup>

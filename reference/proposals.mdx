@@ -1,0 +1,585 @@
+---
+title: 'Proposals'
+description: 'Technical reference for the proposal system used in NNS and SNS governance'
+---
+
+## Overview
+
+Proposals are the primary mechanism for making decisions in both the Network Nervous System (NNS) and Service Nervous Systems (SNS). They enable the community to vote on changes to governance parameters, canister upgrades, economic policies, and custom actions.
+
+## Proposal Lifecycle
+
+<Steps>
+  <Step title="Submission">
+    A neuron with sufficient stake submits a proposal with:
+    - Title and description
+    - Proposal action/payload
+    - Topic/category
+  </Step>
+  
+  <Step title="Validation">
+    The governance canister validates:
+    - Proposal format and size limits
+    - Neuron permissions
+    - Payload correctness (if validator specified)
+  </Step>
+  
+  <Step title="Voting Period">
+    Neurons vote based on:
+    - Manual votes from controllers
+    - Automatic following relationships
+    - Topic-specific deadlines
+  </Step>
+  
+  <Step title="Decision">
+    Proposal is adopted or rejected based on:
+    - Voting power threshold
+    - Participation quorum
+    - Vote distribution
+  </Step>
+  
+  <Step title="Execution">
+    If adopted, the proposal action is executed:
+    - Native functions called directly
+    - Custom functions invoke target canisters
+    - State changes applied
+  </Step>
+</Steps>
+
+## NNS Proposals
+
+### Proposal Structure
+
+```protobuf
+message Proposal {
+  optional string title;        // 5-256 bytes
+  optional string summary;      // Proposal description
+  optional string url;          // Reference documentation
+  
+  oneof action {
+    Motion motion;
+    ManageNeuron manage_neuron;
+    ExecuteNnsFunction execute_nns_function;
+    ApproveGenesisKyc approve_genesis_kyc;
+    AddOrRemoveNodeProvider add_or_remove_node_provider;
+    RewardNodeProvider reward_node_provider;
+    SetDefaultFollowees set_default_followees;
+    RegisterKnownNeuron register_known_neuron;
+    // ... many more action types
+  }
+}
+```
+
+### Proposal Data
+
+```protobuf
+message ProposalData {
+  ProposalId id;
+  NeuronId proposer;
+  uint64 proposal_timestamp_seconds;
+  
+  Proposal proposal;
+  
+  // Voting state
+  map<uint64, Vote> ballots;           // Neuron ID -> Vote
+  uint64 latest_tally_seconds;
+  uint64 decided_timestamp_seconds;
+  uint64 executed_timestamp_seconds;
+  uint64 failed_timestamp_seconds;
+  
+  // Rejection details
+  optional string failure_reason;
+  optional string reward_event_round;
+}
+```
+
+### Common NNS Proposal Types
+
+#### Motion
+
+Non-binding proposals to gauge community sentiment:
+
+```protobuf
+message Motion {
+  string motion_text;  // Description of proposed direction
+}
+```
+
+**Use Cases**:
+- Request for comments on future changes
+- Gauge support for initiatives
+- Signal community priorities
+
+#### Execute NNS Function
+
+Execute administrative functions on the Internet Computer:
+
+```protobuf
+message ExecuteNnsFunction {
+  NnsFunction nns_function;
+  bytes payload;
+}
+```
+
+**Example Functions**:
+- `CREATE_SUBNET`: Form new subnet from nodes
+- `ADD_NODE_TO_SUBNET`: Expand existing subnet
+- `NNS_CANISTER_UPGRADE`: Upgrade NNS canister WASM
+- `BLESS_REPLICA_VERSION`: Approve new replica version
+- `UPDATE_CONFIG_OF_SUBNET`: Modify subnet parameters
+
+#### Manage Neuron
+
+Modify neurons through proposals (restricted voting):
+
+```protobuf
+message ManageNeuron {
+  NeuronId id;
+  
+  oneof command {
+    Configure configure;
+    Disburse disburse;
+    Split split;
+    Follow follow;
+    MakeProposal make_proposal;
+    RegisterVote register_vote;
+    // ... other commands
+  }
+}
+```
+
+<Warning>
+Neuron management proposals have a **short voting period** and restricted voter eligibility.
+</Warning>
+
+#### Register Known Neuron
+
+Make a neuron publicly known for following:
+
+```protobuf
+message RegisterKnownNeuron {
+  NeuronId id;
+  KnownNeuron known_neuron;
+}
+```
+
+**Purpose**: Enable other neurons to easily follow reputable neurons by name.
+
+#### Reward Node Provider
+
+Compensate node providers for infrastructure:
+
+```protobuf
+message RewardNodeProvider {
+  NodeProvider node_provider;
+  Amount amount_e8s;
+  RewardMode reward_mode;
+}
+```
+
+## SNS Proposals
+
+### Proposal Structure
+
+```protobuf
+message Proposal {
+  string title;                  // Max 256 bytes
+  string summary;                // Max 30,000 bytes (SNS allows longer)
+  string url;                    // Optional reference
+  
+  oneof action {
+    Unspecified unspecified;
+    Motion motion;
+    ManageNervousSystemParameters manage_nervous_system_parameters;
+    UpgradeSnsControlledCanister upgrade_sns_controlled_canister;
+    AddGenericNervousSystemFunction add_generic_nervous_system_function;
+    RemoveGenericNervousSystemFunction remove_generic_nervous_system_function;
+    ExecuteGenericNervousSystemFunction execute_generic_nervous_system_function;
+    RegisterDappCanisters register_dapp_canisters;
+    DeregisterDappCanisters deregister_dapp_canisters;
+    TransferSnsTreasuryFunds transfer_sns_treasury_funds;
+    UpgradeSnsToNextVersion upgrade_sns_to_next_version;
+    ManageSnsMetadata manage_sns_metadata;
+    ManageLedgerParameters manage_ledger_parameters;
+    ManageDappCanisterSettings manage_dapp_canister_settings;
+  }
+}
+```
+
+### SNS-Specific Proposal Types
+
+#### Manage Nervous System Parameters
+
+Modify governance configuration:
+
+```protobuf
+message ManageNervousSystemParameters {
+  optional Duration default_followees;
+  optional Percentage max_dissolve_delay_bonus_percentage;
+  optional Duration max_dissolve_delay;
+  optional uint64 max_neuron_age_for_age_bonus;
+  optional Tokens reject_cost_e8s;
+  optional uint64 neuron_minimum_stake_e8s;
+  // ... many more parameters
+}
+```
+
+**Configurable Parameters**:
+- Voting thresholds and periods
+- Economic parameters (rewards, fees)
+- Neuron requirements (minimum stake, dissolve delay)
+- Proposal costs and limits
+
+#### Upgrade SNS Controlled Canister
+
+Upgrade dapp canisters under SNS control:
+
+```protobuf
+message UpgradeSnsControlledCanister {
+  optional PrincipalId canister_id;
+  optional ChunkedCanisterWasm new_canister_wasm;
+  optional bytes canister_upgrade_arg;
+  optional int32 mode;  // CanisterInstallMode
+}
+```
+
+**Process**:
+1. Proposal specifies target canister and new WASM
+2. WASM is chunked for safe transmission
+3. On adoption, root canister performs upgrade
+4. Post-upgrade hooks execute
+
+#### Add/Remove Generic Nervous System Function
+
+Define or remove custom governance functions:
+
+```protobuf
+message AddGenericNervousSystemFunction {
+  NervousSystemFunction function;
+}
+
+message RemoveGenericNervousSystemFunction {
+  uint64 function_id;
+}
+```
+
+**Custom Function Definition**:
+```protobuf
+message NervousSystemFunction {
+  uint64 id;                              // Must be >= 1000
+  string name;
+  optional string description;
+  
+  GenericNervousSystemFunction generic_nervous_system_function {
+    PrincipalId target_canister_id;
+    optional string target_method_name;
+    PrincipalId validator_canister_id;
+    optional string validator_method_name;
+    optional Topic topic;
+  }
+}
+```
+
+#### Transfer SNS Treasury Funds
+
+Move tokens from SNS treasury:
+
+```protobuf
+message TransferSnsTreasuryFunds {
+  Account from_treasury;
+  optional uint64 amount_e8s;
+  optional Account to_account;
+  optional bytes memo;
+}
+```
+
+<Warning>
+Treasury transfers are irreversible. Ensure accuracy before voting.
+</Warning>
+
+#### Upgrade SNS to Next Version
+
+Upgrade SNS canisters to new blessed version:
+
+```protobuf
+message UpgradeSnsToNextVersion {
+  // Empty - version determined by SNS-W
+}
+```
+
+**Coordinated Upgrade**:
+1. Proposal references next blessed version in SNS-W
+2. All SNS canisters upgrade together
+3. Version compatibility ensured
+
+#### Manage SNS Metadata
+
+Update SNS descriptive information:
+
+```protobuf
+message ManageSnsMetadata {
+  optional string logo;
+  optional string name;
+  optional string description;
+  optional string url;
+}
+```
+
+## Voting Mechanics
+
+### Vote Types
+
+```protobuf
+enum Vote {
+  VOTE_UNSPECIFIED = 0;  // Invalid, not counted
+  VOTE_YES = 1;          // Support adoption
+  VOTE_NO = 2;           // Oppose adoption
+}
+```
+
+### Ballot Recording
+
+```protobuf
+message BallotInfo {
+  ProposalId proposal_id;
+  Vote vote;
+}
+```
+
+Recent ballots are stored in neurons to enable:
+- Following based on voting history
+- Transparency of voting patterns
+- Reward calculation
+
+### Voting Power Calculation
+
+**Formula**:
+```
+voting_power = stake × dissolve_delay_bonus × age_bonus × multiplier
+```
+
+**Components**:
+- **Stake**: Base staked tokens
+- **Dissolve Delay Bonus**: 0-100% based on dissolve delay
+- **Age Bonus**: 0-25% based on neuron age (NNS)
+- **Multiplier**: Developer neuron multiplier (SNS only)
+
+### Following Mechanics
+
+#### Automatic Voting
+
+When a proposal is submitted:
+1. Neurons with manual votes cast immediately
+2. Followers check their followees for the proposal's topic
+3. When a followee votes, followers automatically vote the same
+4. If multiple followees vote differently, majority wins
+5. Ties broken deterministically (e.g., by neuron ID)
+
+#### Fallback Topic
+
+NNS uses `TOPIC_UNSPECIFIED` as fallback:
+- If no followees set for specific topic
+- Use followees from `TOPIC_UNSPECIFIED`
+- Except for `GOVERNANCE` and `SNS_AND_COMMUNITY_FUND`
+
+### Voting Periods
+
+#### NNS Voting Periods
+
+| Category | Duration | Topics |
+|----------|----------|--------|
+| **Short** | ~48 hours | Neuron Management, Exchange Rate |
+| **Standard** | ~4 days | Most topics |
+
+#### SNS Voting Periods
+
+Configurable via `NervousSystemParameters`:
+
+```protobuf
+optional Duration initial_voting_period;
+optional Duration wait_for_quiet_deadline_increase;
+```
+
+### Wait-for-Quiet
+
+Dynamic deadline extension to prevent last-minute vote flipping:
+
+**Algorithm**:
+1. Track vote distribution over time
+2. If significant vote flip near deadline, extend deadline
+3. Extension proportional to time remaining
+4. Maximum total extensions capped
+
+**Purpose**: Ensure stable decision without premature closure
+
+## Proposal Adoption
+
+### Decision Criteria
+
+A proposal is **adopted** if:
+
+1. **Minimum Participation**: Sufficient voting power participates
+2. **Approval Threshold**: Yes votes exceed threshold (typically >50%)
+3. **Voting Period Ends**: Wait-for-quiet deadline reached
+
+### Rejection Scenarios
+
+A proposal is **rejected** if:
+
+- No votes exceed yes votes by threshold
+- Insufficient participation by deadline
+- Validation fails (for validated proposals)
+
+### Execution
+
+Adopted proposals execute automatically:
+
+1. **Native Functions**: Called directly by governance
+2. **Generic Functions**: Inter-canister call to target
+3. **State Updates**: Governance state modified
+4. **Failure Handling**: Execution errors recorded but don't reverse adoption
+
+## Proposal Costs
+
+### Rejection Penalties
+
+To prevent spam, proposers pay fees for rejected proposals:
+
+**NNS**: Neuron fees accumulate, burned on disburse  
+**SNS**: Configurable `reject_cost_e8s`
+
+### Cost Structure
+
+```protobuf
+// SNS configurable rejection cost
+optional Tokens reject_cost_e8s;
+```
+
+If proposal **rejected**: Fee deducted from neuron stake  
+If proposal **adopted**: No cost (incentivizes quality proposals)
+
+## Proposal Validation
+
+### Automatic Validation
+
+Governance validates:
+- Title length (5-256 bytes for NNS, up to 256 for SNS)
+- Summary length (max 30,000 bytes for SNS)
+- Payload size limits
+- Action-specific constraints
+
+### Custom Validators (SNS)
+
+Generic functions can specify validator:
+
+```protobuf
+PrincipalId validator_canister_id;
+optional string validator_method_name;
+```
+
+**Validator Signature**:
+```rust
+fn validate(proposal: ProposalData) -> Result<String, String>
+```
+
+**Returns**:
+- `Ok(rendered_summary)`: Proposal valid, returns rendering
+- `Err(message)`: Proposal invalid, rejection reason
+
+## Proposal History
+
+### Querying Proposals
+
+**Get Proposal Info**:
+```bash
+dfx canister call governance get_proposal_info '(42)'
+```
+
+**List Pending Proposals**:
+```bash
+dfx canister call governance get_pending_proposals '()'
+```
+
+**List All Proposals** (NNS):
+```bash
+dfx canister call governance list_proposals '(
+  record {
+    include_reward_status = vec {};
+    before_proposal = null;
+    limit = 100;
+    exclude_topic = vec {};
+    include_status = vec {};
+  }
+)'
+```
+
+### Proposal Archives
+
+Historical proposals may be archived to manage canister memory:
+- Recent proposals in main governance canister
+- Old proposals moved to archive canisters
+- Queryable via archive canister IDs
+
+## External Resources
+
+<CardGroup cols={2}>
+  <Card title="NNS Proposals List" icon="list" href="https://github.com/dfinity/nns-proposals">
+    Complete history of all NNS proposals
+  </Card>
+  
+  <Card title="NNS Governance Dashboard" icon="chart-bar" href="https://nns.ic0.app">
+    View and vote on active NNS proposals
+  </Card>
+  
+  <Card title="SNS Proposal Guide" icon="book" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/managing/making-proposals">
+    How to create SNS proposals
+  </Card>
+  
+  <Card title="Voting Guide" icon="vote-yea" href="https://internetcomputer.org/docs/current/developer-docs/integrations/sns/managing/making-proposals#voting-on-proposals">
+    Understanding SNS voting mechanics
+  </Card>
+</CardGroup>
+
+## Source Code References
+
+### NNS Proposals
+
+- **Proposal Types**: `rs/nns/governance/src/proposals/`
+- **Voting Logic**: `rs/nns/governance/src/voting.rs`
+- **Proto Definitions**: `rs/nns/governance/proto/ic_nns_governance/pb/v1/governance.proto`
+
+### SNS Proposals
+
+- **Proposal Handling**: `rs/sns/governance/src/proposal.rs`
+- **Execution**: `rs/sns/governance/src/governance.rs`
+- **Proto Definitions**: `rs/sns/governance/proto/ic_sns_governance/pb/v1/governance.proto`
+
+### Shared Infrastructure
+
+- **Common Types**: `rs/nervous_system/proto/proto/ic_nervous_system/pb/v1/nervous_system.proto`
+- **Utilities**: `rs/nervous_system/common/`
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Writing Good Proposals">
+    - **Clear Title**: Concise, descriptive title
+    - **Complete Summary**: Explain rationale and impact
+    - **External Documentation**: Link to detailed specs
+    - **Test First**: Validate approach before proposing
+  </Accordion>
+  
+  <Accordion title="Voting Strategies">
+    - **Research**: Read proposal details and discussion
+    - **Follow Wisely**: Choose followees with aligned interests
+    - **Participate**: Active voting earns rewards
+    - **Topic-Specific**: Different followees for different expertise
+  </Accordion>
+  
+  <Accordion title="Custom Functions">
+    - **Validate Input**: Always provide validator canister
+    - **Test Thoroughly**: Ensure target function is production-ready
+    - **Document Clearly**: Explain function purpose and parameters
+    - **Start Simple**: Begin with simple functions, add complexity gradually
+  </Accordion>
+</AccordionGroup>
